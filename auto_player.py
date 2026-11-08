@@ -183,6 +183,7 @@ class GameTracker:
         self.total_events: int = 0
         self.restart_count: int = 0
         self.status_pill: str = "INITIALIZING"
+        self.is_enabled: bool = True
         self.last_heartbeat: float = time.time()
         self.proc_handle: Optional[subprocess.Popen] = None
 
@@ -322,6 +323,14 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
     }
     .log-line { display: flex; gap: 8px; margin-bottom: 4px; word-break: break-all; }
     .log-time { color: #64748b; font-size: 11px; min-width: 60px; }
+    .btn-action {
+      cursor: pointer; border: none; outline: none; border-radius: 8px; font-weight: 700;
+      font-size: 12px; padding: 6px 14px; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-stop { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .btn-stop:hover { background: rgba(239, 68, 68, 0.4); color: #fff; }
+    .btn-resume { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); }
+    .btn-resume:hover { background: rgba(34, 197, 94, 0.4); color: #fff; }
     .footer {
       margin-top: 24px; text-align: center; color: var(--text-muted); font-size: 12px;
       display: flex; justify-content: space-between; align-items: center;
@@ -347,7 +356,10 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="game-card">
       <div class="game-header">
         <div class="game-title">🐱 Catizen Automation <span class="pill pill-cat">Topic #2</span></div>
-        <span id="cat-state" class="pill pill-cat">ONLINE</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button id="cat-btn" class="btn-action btn-stop" onclick="toggleGame('catizen')">🛑 Stop</button>
+          <span id="cat-state" class="pill pill-cat">ONLINE</span>
+        </div>
       </div>
       <div class="stats-row">
         <div class="stat-box">
@@ -396,7 +408,10 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="game-card">
       <div class="game-header">
         <div class="game-title">⚡ Rignite Tap Engine <span class="pill pill-rig">Topic #4</span></div>
-        <span id="rig-state" class="pill pill-rig">ONLINE</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button id="rig-btn" class="btn-action btn-stop" onclick="toggleGame('rignite')">🛑 Stop</button>
+          <span id="rig-state" class="pill pill-rig">ONLINE</span>
+        </div>
       </div>
       <div class="stats-row">
         <div class="stat-box">
@@ -471,6 +486,15 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         // Catizen Updates
         const cat = data.catizen;
         document.getElementById('cat-state').innerText = cat.status;
+        const catBtn = document.getElementById('cat-btn');
+        if (cat.enabled) {
+          catBtn.className = 'btn-action btn-stop';
+          catBtn.innerText = '🛑 Stop';
+        } else {
+          catBtn.className = 'btn-action btn-resume';
+          catBtn.innerText = '▶️ Resume';
+        }
+
         document.getElementById('cat-gold').innerText = cat.gold.toLocaleString();
         document.getElementById('cat-delta').innerText = (cat.gold_delta >= 0 ? '+' : '') + cat.gold_delta.toLocaleString();
         document.getElementById('cat-rate').innerText = `${cat.gold_rate.toLocaleString()}/s`;
@@ -498,6 +522,14 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         // Rignite Updates
         const rig = data.rignite;
         document.getElementById('rig-state').innerText = rig.status;
+        const rigBtn = document.getElementById('rig-btn');
+        if (rig.enabled) {
+          rigBtn.className = 'btn-action btn-stop';
+          rigBtn.innerText = '🛑 Stop';
+        } else {
+          rigBtn.className = 'btn-action btn-resume';
+          rigBtn.innerText = '▶️ Resume';
+        }
         document.getElementById('rig-coins').innerText = rig.coins.toLocaleString();
         document.getElementById('rig-delta').innerText = (rig.coins_delta >= 0 ? '+' : '') + rig.coins_delta.toLocaleString();
         document.getElementById('rig-rate').innerText = `${rig.coins_rate.toFixed(1)}/s`;
@@ -524,6 +556,19 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
 
       } catch (err) {
         console.error('Update failed:', err);
+      }
+    }
+
+    async function toggleGame(game) {
+      try {
+        const btn = document.getElementById(game === 'catizen' ? 'cat-btn' : 'rig-btn');
+        const isStop = btn.innerText.includes('Stop');
+        const action = isStop ? 'stop' : 'resume';
+        btn.disabled = true;
+        await fetch(`/api/control?game=${game}&action=${action}`, { method: 'POST' });
+        setTimeout(() => { btn.disabled = false; updateDashboard(); }, 500);
+      } catch (e) {
+        console.error('Toggle error:', e);
       }
     }
 
@@ -567,6 +612,11 @@ class AutoPlayerSupervisor:
         env["PYTHONUTF8"] = "1"
 
         while self.is_running:
+            if not tracker.is_enabled:
+                tracker.status_pill = "PAUSED BY USER"
+                time.sleep(1)
+                continue
+
             try:
                 proc = subprocess.Popen(
                     cmd,
@@ -582,9 +632,10 @@ class AutoPlayerSupervisor:
                 )
                 tracker.proc_handle = proc
                 tracker.last_heartbeat = time.time()
+                tracker.status_pill = "ONLINE & ACTIVE"
 
                 for line in proc.stdout:
-                    if not self.is_running:
+                    if not self.is_running or not tracker.is_enabled:
                         break
                     
                     # Intercept structured metric JSON
@@ -604,12 +655,27 @@ class AutoPlayerSupervisor:
                     sys.stdout.write(f"[{label}] {line}")
                     sys.stdout.flush()
 
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
                 proc.wait()
             except Exception as e:
                 tracker.add_log(f"Error: {e}")
 
+            tracker.proc_handle = None
+
             if not self.is_running:
                 break
+
+            if not tracker.is_enabled:
+                tracker.status_pill = "PAUSED BY USER"
+                tracker.add_log(f"⏸️ Game autoplay paused by dashboard control.")
+                while not tracker.is_enabled and self.is_running:
+                    time.sleep(1)
+                if self.is_running:
+                    tracker.add_log(f"▶️ Game autoplay resumed. Launching engine...")
+                continue
 
             tracker.restart_count += 1
             tracker.status_pill = f"RECONNECTING #{tracker.restart_count}"
@@ -660,6 +726,7 @@ class AutoPlayerSupervisor:
             "tg_status": self.last_tg_status,
             "catizen": {
                 "status": self.catizen_tracker.status_pill,
+                "enabled": self.catizen_tracker.is_enabled,
                 "gold": c_curr_gold,
                 "gold_delta": c_gold_delta,
                 "gold_rate": int(c_gold_rate),
@@ -673,6 +740,7 @@ class AutoPlayerSupervisor:
             },
             "rignite": {
                 "status": self.rignite_tracker.status_pill,
+                "enabled": self.rignite_tracker.is_enabled,
                 "coins": r_curr_coins,
                 "coins_delta": r_coins_delta,
                 "coins_rate": r_coins_rate,
@@ -703,8 +771,44 @@ class AutoPlayerSupervisor:
         async def handle_status(request):
             return web.json_response(self.get_status_payload())
 
+        async def handle_control(request):
+            try:
+                game = request.query.get("game", "").lower()
+                action = request.query.get("action", "").lower()
+
+                target = None
+                if game == "catizen":
+                    target = self.catizen_tracker
+                elif game == "rignite":
+                    target = self.rignite_tracker
+
+                if not target:
+                    return web.json_response({"ok": False, "error": "Unknown game"}, status=400)
+
+                if action == "stop":
+                    target.is_enabled = False
+                    if target.proc_handle:
+                        try:
+                            target.proc_handle.terminate()
+                        except Exception:
+                            pass
+                    target.status_pill = "PAUSED BY USER"
+                    target.add_log(f"🛑 [CONTROL] Autoplay stopped via dashboard.")
+                    return web.json_response({"ok": True, "status": "stopped", "game": game})
+                elif action == "resume":
+                    target.is_enabled = True
+                    target.status_pill = "STARTING..."
+                    target.add_log(f"▶️ [CONTROL] Autoplay resumed via dashboard.")
+                    return web.json_response({"ok": True, "status": "resumed", "game": game})
+                else:
+                    return web.json_response({"ok": False, "error": "Invalid action"}, status=400)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=500)
+
         app.router.add_get("/", handle_index)
         app.router.add_get("/api/status", handle_status)
+        app.router.add_post("/api/control", handle_control)
+        app.router.add_get("/api/control", handle_control)
         app.router.add_get("/ping", lambda req: web.Response(text="pong"))
         app.router.add_get("/healthz", lambda req: web.Response(text="ok"))
 
