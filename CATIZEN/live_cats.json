@@ -1,0 +1,71 @@
+{
+  "userInfo": {
+    "cats": [
+      5,
+      9,
+      12,
+      5,
+      5,
+      4,
+      6,
+      5,
+      5,
+      5,
+      6,
+      5
+    ],
+    "bag": {},
+    "counts": {},
+    "stakeCats": {},
+    "tokens": {},
+    "id": 51679031,
+    "accountId": 50722603,
+    "accountName": "C1_7749030503",
+    "name": "Saqlain",
+    "gold": "9084469",
+    "rankGold": "37264260",
+    "goldTime": 1794037475,
+    "offGold": "0",
+    "boostEndTime": -62135596800,
+    "offTime": 1794037601,
+    "fishCoin": "50",
+    "exData": {
+      "times": {},
+      "catNum": {
+        "1": 41,
+        "2": 10,
+        "3": 22,
+        "4": 22,
+        "5": 21,
+        "6": 15,
+        "7": 10
+      },
+      "catNumFish": {},
+      "buyGoods": {},
+      "pendingCheckIns": [],
+      "pendingCheckRankRush": [],
+      "stakeClaimInfo": [],
+      "earnClaimInfo": [],
+      "maxCatLvl": 12,
+      "freeCatLvl": 1,
+      "maxGoldSpeedLvl": 1
+    },
+    "fishData": {
+      "counts": {},
+      "sumR": [],
+      "refreshTime": 1794035059
+    },
+    "bcId": 90001,
+    "randomEvent": {
+      "type": 2,
+      "time": 1794036907,
+      "multipleTime": 1793984601
+    },
+    "loginTime": 1794037587,
+    "wCati": "0",
+    "channelID": 1,
+    "xZen": "0",
+    "cati": "0",
+    "airDropCati": "0"
+  }
+}
