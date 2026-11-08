@@ -1,0 +1,28 @@
+ 
+name: Mirror to GitLab
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs: 
+  sync-to-gitlab:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitHub repo (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to GitLab
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+
+          # Add GitLab remote using access token
+          git remote add gitlab https://oauth2:${{ secrets.GITLAB_TOKEN }}@gitlab.com/io-bots/Auto-TG_Gameplay.git
+
+          # Push current branch to same branch on GitLab
+          git push gitlab HEAD:${GITHUB_REF_NAME}
