@@ -226,20 +226,37 @@ class RigniteClient:
     def emit_telemetry(self, event_type: str = "tap_sync", extra: Optional[Dict[str, Any]] = None):
         """Emits structured JSON metrics for AutoPlayer supervisor without breaking HUD/console."""
         try:
+            # Calculate rolling real rate metrics
+            elapsed = max(1.0, time.time() - self.session_start_time)
+            coins_delta = self.coins - (self.start_coins if self.start_coins is not None else self.coins)
+            earned_positive = max(0, coins_delta)
+            rate_cps = earned_positive / elapsed
+            cadence = (self.session_taps / elapsed) if elapsed > 0 else 0.0
+
             payload = {
                 "game": "rignite",
                 "type": event_type,
                 "user": self.user_info.get("username") or self.user_info.get("first_name", "Player"),
                 "coins": self.coins,
+                "start_coins": self.start_coins,
+                "coins_delta": coins_delta,
+                "rate_cps": rate_cps,
+                "rate_cpm": int(rate_cps * 60.0),
                 "energy": self.energy,
                 "max_energy": self.max_energy,
                 "battery_energy": self.battery_energy,
                 "battery_cap": self.battery_cap,
                 "full_energy_left": self.full_energy_left,
                 "ad_energy_left": self.ad_energy_left,
+                "ad_boost_left": self.ad_boost_left,
+                "tap_mult": self.tap_mult,
+                "action_status": self.last_status,
+                "next_action": self.next_action_eta,
                 "session_taps": self.session_taps,
+                "tap_cadence": cadence,
                 "total_accepted": self.total_accepted,
                 "cycle_count": self.cycle_count,
+                "batches_sent": self.batches_sent,
                 "timestamp": int(time.time() * 1000)
             }
             if extra:
@@ -397,9 +414,14 @@ class RigniteClient:
             # Human-like ad viewing duration (16 - 25 seconds)
             view_seconds = random.randint(16, 25)
             self.log(f"Watching rewarded ad for {ad_type} ({view_seconds}s)...", "cyan")
+            self.last_status = f"Watching {ad_type} ad ({view_seconds}s)..."
+            self.next_action_eta = f"Ad finishes in {view_seconds}s"
+            self.emit_telemetry("ad_watch_start", {"action_status": self.last_status, "next_action": self.next_action_eta})
             for sec in range(view_seconds, 0, -1):
                 self.last_status = f"Watching {ad_type} ad ({sec}s remaining)..."
                 self.next_action_eta = f"Ad finishes in {sec}s"
+                if sec % 3 == 0 or sec <= 2:
+                    self.emit_telemetry("ad_watching", {"action_status": self.last_status, "next_action": self.next_action_eta})
                 time.sleep(1.0)
 
             # Build realistic completion payload
@@ -418,6 +440,7 @@ class RigniteClient:
                 if ad_type == "full_energy":
                     self.last_ad_energy_time = time.time()
                 self.refresh_me()
+                self.emit_telemetry("ad_reward_claimed", {"action_status": f"Claimed {ad_type} ad reward", "next_action": "Resuming taps"})
                 return True
             else:
                 self.log(f"Ad completion rejected (HTTP {comp_resp.status_code})", "yellow")
@@ -437,8 +460,10 @@ class RigniteClient:
                 data = resp.json()
                 self.energy = data.get("energy", self.max_energy)
                 self.full_energy_left = data.get("fullEnergyLeft", 0)
+                self.last_status = "Instant full energy refill activated"
+                self.next_action_eta = "Ready to tap"
                 self.log(f"⚡ Instant full energy refill activated! ({self.full_energy_left} left)", "bold green")
-                self.emit_telemetry("boost_refill")
+                self.emit_telemetry("boost_refill", {"action_status": self.last_status, "next_action": self.next_action_eta})
                 return True
         except Exception as e:
             self.log(f"Booster activation error: {e}", "red")
@@ -626,6 +651,7 @@ class RigniteClient:
                         self.log(f"Opportunistic energy top-up: tank at {energy_pct:.0f}% ({self.energy}/{self.max_energy})", "cyan")
                         self.last_status = "Opportunistic energy top-up via ad..."
                         self.next_action_eta = "Watching rewarded ad..."
+                        self.emit_telemetry("ad_prep", {"action_status": self.last_status, "next_action": self.next_action_eta})
                         update_hud()
                         if self.simulate_rewarded_ad("full_energy"):
                             update_hud()
@@ -640,6 +666,7 @@ class RigniteClient:
                         if random.random() < 0.80:
                             self.last_status = "Using instant Daily Energy Refill..."
                             self.next_action_eta = "Claiming daily refill..."
+                            self.emit_telemetry("boost_prep", {"action_status": self.last_status, "next_action": self.next_action_eta})
                             update_hud()
                             time.sleep(random.uniform(2.5, 5.0))
                             if self.trigger_full_energy_boost():
@@ -650,9 +677,11 @@ class RigniteClient:
                             brief_pause = random.randint(30, 65)
                             self.log(f"Natural human pause ({brief_pause}s) before claiming instant refill...", "dim yellow")
                             for remaining in range(brief_pause, 0, -1):
-                                self.last_status = f"Brief pause before refill..."
+                                self.last_status = f"Brief pause before refill ({remaining}s)..."
                                 self.next_action_eta = f"Refill in {remaining}s"
                                 update_hud(remaining)
+                                if remaining % 4 == 0 or remaining <= 2:
+                                    self.emit_telemetry("boost_pause", {"action_status": self.last_status, "next_action": self.next_action_eta})
                                 time.sleep(1.0)
                             if self.trigger_full_energy_boost():
                                 update_hud()
@@ -662,6 +691,7 @@ class RigniteClient:
                     if self.ad_energy_left > 0 and random.random() < 0.55:
                         self.last_status = "Refueling energy via rewarded ad..."
                         self.next_action_eta = "Watching rewarded ad..."
+                        self.emit_telemetry("ad_prep", {"action_status": self.last_status, "next_action": self.next_action_eta})
                         update_hud()
                         if self.simulate_rewarded_ad("full_energy"):
                             update_hud()
@@ -673,11 +703,14 @@ class RigniteClient:
                     self.next_action_eta = f"Natural recharge: {wait_seconds}s"
                     self.log(f"Energy depleted. Resting {wait_seconds}s for battery & energy recharge...", "yellow")
                     console.print(f"🔋 [Rignite Recharge] Resting {wait_seconds}s for battery & energy recharge...")
+                    self.emit_telemetry("recharge_start", {"action_status": f"Recharging energy ({wait_seconds}s)", "next_action": f"Recharge ends in {wait_seconds}s"})
 
                     for remaining in range(wait_seconds, 0, -1):
-                        self.last_status = f"Resting & recharging energy..."
+                        self.last_status = f"Resting & recharging energy ({remaining}s)..."
                         self.next_action_eta = f"Recharge ends in {remaining}s"
                         update_hud(remaining)
+                        if remaining % 4 == 0 or remaining <= 2:
+                            self.emit_telemetry("recharging", {"action_status": self.last_status, "next_action": self.next_action_eta})
                         time.sleep(1.0)
 
                     self.last_status = "Syncing profile after recharge..."

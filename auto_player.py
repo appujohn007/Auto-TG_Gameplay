@@ -188,6 +188,21 @@ class GameTracker:
         self.last_heartbeat: float = time.time()
         self.proc_handle: Optional[subprocess.Popen] = None
 
+    def reset_metrics_baseline(self):
+        """Resets baseline states and starts fresh so spent coins don't distort session metrics."""
+        self.start_time = datetime.now(IST_TZ)
+        if self.current_state:
+            self.start_state = dict(self.current_state)
+            self.period_start_state = dict(self.current_state)
+            # Reset current delta / session tap counts
+            self.current_state["session_taps"] = 0
+            self.current_state["coins_delta"] = 0
+            self.current_state["start_coins"] = self.current_state.get("coins", 0)
+        else:
+            self.start_state = {}
+            self.period_start_state = {}
+        self.events_in_period.clear()
+
     def add_log(self, text: str):
         self.last_heartbeat = time.time()
         cleaned = text.strip()
@@ -455,6 +470,18 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Action & Refill Status Banner -->
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Refill & Engine Action</span>
+          <span id="rig-action-badge" class="pill" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">ACTIVE TAPPING</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 13px;">
+          <span id="rig-action-status" style="font-weight: 600; color: #f1f5f9;">Engine operating normally</span>
+          <span id="rig-next-action" style="font-size: 12px; color: var(--gold); font-family: 'JetBrains Mono', monospace;">Ready</span>
+        </div>
+      </div>
+
       <div>
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; color: var(--text-muted);">
           <span>Energy Tank Capacity</span>
@@ -573,6 +600,35 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('rig-battery-val').innerText = `${rig.battery_energy.toLocaleString()} / ${rig.battery_cap.toLocaleString()}`;
         const bPct = rig.battery_cap > 0 ? Math.min(100, Math.max(0, (rig.battery_energy / rig.battery_cap) * 100)) : 0;
         document.getElementById('rig-battery-bar').style.width = `${bPct}%`;
+
+        // Refill and Action details
+        const actionStatus = rig.action_status || 'Engine active';
+        const nextAction = rig.next_action || 'Ready';
+        document.getElementById('rig-action-status').innerText = actionStatus;
+        document.getElementById('rig-next-action').innerText = nextAction;
+        
+        const actionBadge = document.getElementById('rig-action-badge');
+        if (actionStatus.toLowerCase().includes('ad')) {
+          actionBadge.innerText = 'WATCHING AD REFILL';
+          actionBadge.style.color = '#38bdf8';
+          actionBadge.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+          actionBadge.style.background = 'rgba(56, 189, 248, 0.2)';
+        } else if (actionStatus.toLowerCase().includes('recharg') || actionStatus.toLowerCase().includes('rest')) {
+          actionBadge.innerText = 'RECHARGING REST';
+          actionBadge.style.color = '#fbbf24';
+          actionBadge.style.borderColor = 'rgba(251, 191, 36, 0.4)';
+          actionBadge.style.background = 'rgba(251, 191, 36, 0.2)';
+        } else if (actionStatus.toLowerCase().includes('daily') || actionStatus.toLowerCase().includes('refill')) {
+          actionBadge.innerText = 'INSTANT REFILL';
+          actionBadge.style.color = '#4ade80';
+          actionBadge.style.borderColor = 'rgba(74, 222, 128, 0.4)';
+          actionBadge.style.background = 'rgba(74, 222, 128, 0.2)';
+        } else {
+          actionBadge.innerText = 'BURST TAPPING';
+          actionBadge.style.color = '#c084fc';
+          actionBadge.style.borderColor = 'rgba(192, 132, 252, 0.4)';
+          actionBadge.style.background = 'rgba(192, 132, 252, 0.2)';
+        }
 
         // Rig Logs
         const rigLogs = document.getElementById('rig-logs');
@@ -740,12 +796,14 @@ class AutoPlayerSupervisor:
         r_init = self.rignite_tracker.start_state
         r_curr_coins = r_state.get("coins", 0)
         r_start_coins = r_init.get("coins", r_curr_coins)
-        r_coins_delta = r_curr_coins - r_start_coins
-        r_coins_rate = max(0, r_coins_delta) / session_sec
-        r_coins_cpm = int(r_coins_rate * 60.0)
+        
+        # Prefer engine-calculated delta & rate if present, else fallback
+        r_coins_delta = r_state.get("coins_delta", r_curr_coins - r_start_coins)
+        r_coins_rate = r_state.get("rate_cps", max(0, r_coins_delta) / session_sec)
+        r_coins_cpm = r_state.get("rate_cpm", int(r_coins_rate * 60.0))
         r_taps = r_state.get("session_taps", 0)
-        r_cadence = (r_taps / session_sec) if session_sec > 0 else 0.0
-        r_batches = sum(1 for e in self.rignite_tracker.events_in_period if e["data"].get("type") == "tap_sync")
+        r_cadence = r_state.get("tap_cadence", (r_taps / session_sec) if session_sec > 0 else 0.0)
+        r_batches = r_state.get("batches_sent", sum(1 for e in self.rignite_tracker.events_in_period if e["data"].get("type") == "tap_sync"))
 
         return {
             "uptime": uptime_fmt,
@@ -782,6 +840,10 @@ class AutoPlayerSupervisor:
                 "tap_cadence": r_cadence,
                 "boosts": r_state.get("full_energy_left", 0),
                 "ad_energy_left": r_state.get("ad_energy_left", 0),
+                "ad_boost_left": r_state.get("ad_boost_left", 0),
+                "tap_mult": r_state.get("tap_mult", 1),
+                "action_status": r_state.get("action_status", "Tapping Active"),
+                "next_action": r_state.get("next_action", "Ready"),
                 "batches_synced": r_batches,
                 "cycle": r_state.get("cycle_count", 1),
                 "logs": self.rignite_tracker.raw_logs[-35:]
@@ -827,7 +889,8 @@ class AutoPlayerSupervisor:
                 elif action == "resume":
                     target.is_enabled = True
                     target.status_pill = "STARTING..."
-                    target.add_log(f"▶️ [CONTROL] Autoplay resumed via dashboard.")
+                    target.reset_metrics_baseline()
+                    target.add_log(f"▶️ [CONTROL] Autoplay resumed via dashboard. Metrics reset for fresh session.")
                     return web.json_response({"ok": True, "status": "resumed", "game": game})
                 else:
                     return web.json_response({"ok": False, "error": "Invalid action"}, status=400)
