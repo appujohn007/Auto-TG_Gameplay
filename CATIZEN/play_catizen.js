@@ -500,6 +500,26 @@ for (const [id, name] of Object.entries(opcodes)) {
   CmdToId[name] = parseInt(id, 10);
 }
 
+// Telemetry state tracker for supervisor
+function emitTelemetry(eventType, extra = {}) {
+  try {
+    const payload = {
+      game: 'catizen',
+      type: eventType,
+      gold: currentGold,
+      max_cat_lvl: maxCatLvl,
+      board: currentGrid,
+      highest_on_board: currentGrid.length ? Math.max(...currentGrid, 0) : 0,
+      empty_slots: currentGrid.filter(c => !c || c === 0).length,
+      user_name: (userInfo && userInfo.name) || '',
+      nick_name: (userInfo && userInfo.nickName) || '',
+      timestamp: Date.now(),
+      ...extra
+    };
+    console.log(`[AUTOPLAYER_METRIC] ${JSON.stringify(payload)}`);
+  } catch (e) {}
+}
+
 let ws = null;
 let transId = 1;
 let currentGrid = [];
@@ -508,6 +528,11 @@ let currentGold = 0;
 let maxCatLvl = 13;
 let heartbeatTimer = null;
 let loopTimer = null;
+let sessionExpiryTimer = null;
+let lastPacketTime = Date.now();
+
+// Auto-refresh Telegram WebApp token session every 35 minutes to keep connection forever fresh
+const SESSION_REFRESH_INTERVAL = 35 * 60 * 1000;
 let isActing = false;
 let isReconnecting = false;
 
@@ -643,10 +668,23 @@ async function connect() {
       clearInterval(heartbeatTimer);
       heartbeatTimer = setInterval(() => {
         sendPacket('HeartBeatReq', {});
+        // WebSocket silence watchdog: if no packets received for 35s, trigger proactive reconnect
+        if (Date.now() - lastPacketTime > 35000) {
+          console.log('⚠️ [CATIZEN WATCHDOG] Connection stalled (silent >35s). Cycling WebSocket...');
+          try { ws.close(); } catch (e) {}
+        }
       }, 5000);
+
+      // Proactive session cycling watchdog
+      clearTimeout(sessionExpiryTimer);
+      sessionExpiryTimer = setTimeout(() => {
+        console.log('🔄 [CATIZEN SESSION LIFECYCLE] 35-Minute lifecycle reached. Proactively refreshing Telegram session & reconnecting...');
+        try { ws.close(); } catch (e) {}
+      }, SESSION_REFRESH_INTERVAL);
     });
 
     ws.on('message', async (data) => {
+      lastPacketTime = Date.now();
       try {
         const buf = new Uint8Array(data);
         const envelope = pb.CSMessage.decode(buf);
@@ -666,6 +704,7 @@ async function connect() {
             console.log(`\n Logged in successfully! Welcome ${userInfo.name}!`);
             console.log(`💰 Gold: ${currentGold.toLocaleString()} | Highest Cat: Lvl ${Math.max(...currentGrid, maxCatLvl)} | Target Store Cat: Level ${topShopLvl}`);
             printGrid(currentGrid);
+            emitTelemetry('login', { target_shop_lvl: topShopLvl });
             scheduleNextAction(400);
           }
         }
@@ -683,6 +722,7 @@ async function connect() {
               console.log(`\n MERGE SUCCESS! Highest Cat on Board: Level ${topCat}`);
             }
             printGrid(currentGrid);
+            emitTelemetry('merge', { highest_cat: topCat, max_record: maxCatLvl });
             scheduleNextAction(300);
           }
         }
@@ -703,6 +743,7 @@ async function connect() {
             console.log(`\n TOP STORE CAT BOUGHT! Level ${res.catLvl} Cat at slot ${targetSlot}!`);
             console.log(`💰 Remaining Gold: ${currentGold.toLocaleString()}`);
             printGrid(currentGrid);
+            emitTelemetry('buy_cat', { bought_lvl: res.catLvl, slot: targetSlot });
             scheduleNextAction(400);
           }
         }
@@ -714,6 +755,7 @@ async function connect() {
             currentGrid = res.cats.map(c => Number(c) || 0);
             console.log(`\n🪂 CAT AIRDROP CLAIMED! Free cat landed on board!`);
             printGrid(currentGrid);
+            emitTelemetry('airdrop_claimed');
             scheduleNextAction(300);
           }
         }
@@ -722,6 +764,7 @@ async function connect() {
         if (cmdName === 'GetFreeCatAck' && pb.GetFreeCatAck) {
           const res = pb.GetFreeCatAck.decode(envelope.body);
           console.log(`\n🎁 FREE TIMER CAT RECEIVED! (Level ${res.catLvl || 1})`);
+          emitTelemetry('free_cat_claimed', { cat_lvl: res.catLvl || 1 });
         }
 
         // Speed Booster Ack
@@ -730,6 +773,7 @@ async function connect() {
           if (res.boostEndTime) {
             boostEndTime = Number(res.boostEndTime);
             console.log(`\n⚡ 2X SPEED BOOST ACTIVATED! (Until ${new Date(boostEndTime * 1000).toLocaleTimeString()})`);
+            emitTelemetry('boost_activated', { boost_end_time: boostEndTime });
           }
         }
 
@@ -741,11 +785,13 @@ async function connect() {
         if (cmdName === 'GetRandomEventRankRushAwardAck' && pb.GetRandomEventRankRushAwardAck) {
           const res = pb.GetRandomEventRankRushAwardAck.decode(envelope.body);
           console.log(`\n🎉 RANK RUSH REWARD CLAIMED! FishCoin: ${res.fishCoin || '0'}`);
+          emitTelemetry('rank_rush_claimed', { fish_coin: res.fishCoin || '0' });
         }
 
         // Feature 5: Daily Check-In Ack
         if (cmdName === 'BCCheckInAck' && pb.BCCheckInAck) {
           console.log(`\n📅 DAILY CHECK-IN RECORDED ON SERVER!`);
+          emitTelemetry('check_in_done');
         }
 
         // Feature 4: Cat Position Switch Ack
@@ -767,6 +813,7 @@ async function connect() {
             currentGrid = res.cats.map(c => Number(c) || 0);
             console.log(`\n🗑️ OBSOLETE CAT DELETED! Freed up slot.`);
             printGrid(currentGrid);
+            emitTelemetry('del_cat');
             scheduleNextAction(300);
           }
         }
@@ -776,6 +823,7 @@ async function connect() {
           if (res.gold) {
             currentGold = Number(res.gold) || currentGold;
             console.log(`💰 Idle Income Gathered! Gold: ${currentGold.toLocaleString()}`);
+            emitTelemetry('gather_gold');
           }
           scheduleNextAction(400);
         }

@@ -24,9 +24,18 @@ import time
 import math
 import random
 import uuid
+import json
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
+
+# Ensure stdout and stderr handle UTF-8 cleanly on Windows
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -37,7 +46,7 @@ from rich.table import Table
 from rich.live import Live
 from rich.text import Text
 
-console = Console()
+console = Console(legacy_windows=False)
 
 # Endpoints
 API_BASE_URL = "https://api.rignite.app"
@@ -212,6 +221,34 @@ class RigniteClient:
         self.next_action_eta: str = "Tapping Active"
         self.last_status: str = "Initialized"
         self.recent_logs: list = []
+        self._last_telemetry_emit: float = 0.0
+
+    def emit_telemetry(self, event_type: str = "tap_sync", extra: Optional[Dict[str, Any]] = None):
+        """Emits structured JSON metrics for AutoPlayer supervisor without breaking HUD/console."""
+        try:
+            payload = {
+                "game": "rignite",
+                "type": event_type,
+                "user": self.user_info.get("username") or self.user_info.get("first_name", "Player"),
+                "coins": self.coins,
+                "energy": self.energy,
+                "max_energy": self.max_energy,
+                "battery_energy": self.battery_energy,
+                "battery_cap": self.battery_cap,
+                "full_energy_left": self.full_energy_left,
+                "ad_energy_left": self.ad_energy_left,
+                "session_taps": self.session_taps,
+                "total_accepted": self.total_accepted,
+                "cycle_count": self.cycle_count,
+                "timestamp": int(time.time() * 1000)
+            }
+            if extra:
+                payload.update(extra)
+            # Flush directly to stdout
+            sys.stdout.write(f"\n[AUTOPLAYER_METRIC] {json.dumps(payload)}\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def log(self, text: str, style: str = "white"):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -312,6 +349,7 @@ class RigniteClient:
 
         self.log(f"Logged in as: [bold yellow]@{user_name}[/]", "green")
         self.log(f"Balance: [yellow]{self.coins:,}[/] | Energy: [green]{self.energy}/{self.max_energy}[/] | Boosts: [cyan]{self.full_energy_left}[/] | Ad Energy: [cyan]{self.ad_energy_left}[/]", "white")
+        self.emit_telemetry("auth_success")
         return token
 
     def refresh_me(self):
@@ -398,6 +436,7 @@ class RigniteClient:
                 self.energy = data.get("energy", self.max_energy)
                 self.full_energy_left = data.get("fullEnergyLeft", 0)
                 self.log(f"⚡ Instant full energy refill activated! ({self.full_energy_left} left)", "bold green")
+                self.emit_telemetry("boost_refill")
                 return True
         except Exception as e:
             self.log(f"Booster activation error: {e}", "red")
@@ -433,6 +472,15 @@ class RigniteClient:
         payload = {"count": count}
 
         resp = self.http.post(TAP_ENDPOINT, json=payload, headers=headers, timeout=12)
+
+        # Token expiration auto-handshake recovery (401 Unauthorized)
+        if resp.status_code == 401:
+            self.log("⚠️ [RIGNITE AUTH] Session token expired (401). Re-acquiring fresh Telegram WebApp session...", "yellow")
+            console.print("[Rignite] Session token expired (401). Re-authenticating...")
+            self.fetch_fresh_init_data()
+            self.authenticate()
+            return self.sync_taps(count)
+
         if resp.status_code == 429:
             retry_after = int(resp.headers.get("x-ratelimit-reset", "20"))
             self.last_status = f"Rate limited. Waiting {retry_after}s..."
@@ -453,6 +501,11 @@ class RigniteClient:
         self.total_accepted += accepted
         self.session_taps += accepted
         self.batches_sent += 1
+
+        now = time.time()
+        if now - self._last_telemetry_emit >= 5.0:
+            self._last_telemetry_emit = now
+            self.emit_telemetry("tap_sync", {"batch_accepted": accepted})
 
         return data
 
@@ -534,15 +587,36 @@ class RigniteClient:
         4. Re-syncs profile and resumes tapping.
         """
         self.log(f"Autonomous Auto-Pilot activated. Target: [bold yellow]@{self.bot_username}[/]", "bold green")
+        console.print(f"[bold green]▶ Rignite Auto-Pilot Started for @{self.bot_username} (Player: @{self.user_info.get('username') or self.user_info.get('first_name', 'Player')})[/bold green]")
+        console.print(f"💰 Initial Balance: {self.coins:,} | Energy: {self.energy}/{self.max_energy} | Refills: {self.full_energy_left}")
 
-        with Live(console=console, refresh_per_second=6, transient=False) as live:
+        # If stdout is a real terminal, use rich Live HUD; if running inside a supervisor pipe, use clean log streaming
+        is_real_tty = sys.stdout.isatty()
+        live_ctx = Live(console=console, refresh_per_second=6, transient=False) if is_real_tty else None
+
+        def update_hud(countdown: int = 0):
+            if live_ctx:
+                live_ctx.update(self.create_dashboard(countdown_sec=countdown))
+
+        last_session_refresh_time = time.time()
+        # Refresh Telegram session every 40 minutes for uninterrupted infinite operation
+        SESSION_MAX_AGE_SEC = 40 * 60
+
+        try:
+            if live_ctx:
+                live_ctx.start()
+
             while True:
+                # Proactive Session Cycling Watchdog
+                if time.time() - last_session_refresh_time > SESSION_MAX_AGE_SEC:
+                    console.print("[Rignite Lifecycle] 40-minute session lifecycle reached. Proactively refreshing Telegram session...")
+                    self.fetch_fresh_init_data()
+                    self.authenticate()
+                    last_session_refresh_time = time.time()
+
                 # -------------------------------------------------------------
                 # 0. Opportunistic Pre-Emptive Ad Energy Refill
                 # -------------------------------------------------------------
-                # Humans often top up energy early before running completely dry.
-                # If energy drops below 35% of capacity (e.g. < 1200 / 3500) and at least 3 minutes
-                # have elapsed since the last ad refill, take an opportunistic ~22% roll to watch an ad.
                 energy_pct = (self.energy / max(1, self.max_energy)) * 100.0
                 time_since_ad = time.time() - self.last_ad_energy_time
                 if self.energy > 15 and energy_pct < 35.0 and time_since_ad > 180 and self.ad_energy_left > 0:
@@ -550,9 +624,9 @@ class RigniteClient:
                         self.log(f"Opportunistic energy top-up: tank at {energy_pct:.0f}% ({self.energy}/{self.max_energy})", "cyan")
                         self.last_status = "Opportunistic energy top-up via ad..."
                         self.next_action_eta = "Watching rewarded ad..."
-                        live.update(self.create_dashboard())
+                        update_hud()
                         if self.simulate_rewarded_ad("full_energy"):
-                            live.update(self.create_dashboard())
+                            update_hud()
                             time.sleep(1.0)
                             continue
 
@@ -560,62 +634,58 @@ class RigniteClient:
                 # 1. Energy Depletion & Natural Rest Handling
                 # -------------------------------------------------------------
                 if self.energy <= 15:
-                    # Plan A ("The Natural Gamer"): 80% natural refill, 20% organic breather
                     if self.full_energy_left > 0:
                         if random.random() < 0.80:
                             self.last_status = "Using instant Daily Energy Refill..."
                             self.next_action_eta = "Claiming daily refill..."
-                            live.update(self.create_dashboard())
-                            # Realistic human reaction delay: 2.5s - 5.0s
+                            update_hud()
                             time.sleep(random.uniform(2.5, 5.0))
                             if self.trigger_full_energy_boost():
-                                live.update(self.create_dashboard())
+                                update_hud()
                                 time.sleep(1.0)
                                 continue
                         else:
-                            # 20% organic human breather (30s - 65s) before claiming refill
                             brief_pause = random.randint(30, 65)
                             self.log(f"Natural human pause ({brief_pause}s) before claiming instant refill...", "dim yellow")
                             for remaining in range(brief_pause, 0, -1):
                                 self.last_status = f"Brief pause before refill..."
                                 self.next_action_eta = f"Refill in {remaining}s"
-                                live.update(self.create_dashboard(countdown_sec=remaining))
+                                update_hud(remaining)
                                 time.sleep(1.0)
                             if self.trigger_full_energy_boost():
-                                live.update(self.create_dashboard())
+                                update_hud()
                                 continue
 
-                    # B. Rewarded Ad Energy Refills (if daily refills are empty but ad refills exist)
-                    # Natural gamer behavior: ~55% chance to watch ad (moderate aggressiveness)
+                    # B. Rewarded Ad Energy Refills
                     if self.ad_energy_left > 0 and random.random() < 0.55:
                         self.last_status = "Refueling energy via rewarded ad..."
                         self.next_action_eta = "Watching rewarded ad..."
-                        live.update(self.create_dashboard())
+                        update_hud()
                         if self.simulate_rewarded_ad("full_energy"):
-                            live.update(self.create_dashboard())
+                            update_hud()
                             time.sleep(1.0)
                             continue
 
-                    # C. Natural Recharge (Human rest period when boosts are exhausted or skipped)
-                    # Relaxed, natural resting window: 60s to 150s (1 to 2.5 minutes)
-                    recharge_needed = max(50, self.max_energy - self.energy)
+                    # C. Natural Recharge
                     wait_seconds = random.randint(60, 150)
                     self.next_action_eta = f"Natural recharge: {wait_seconds}s"
                     self.log(f"Energy depleted. Resting {wait_seconds}s for battery & energy recharge...", "yellow")
+                    console.print(f"🔋 [Rignite Recharge] Resting {wait_seconds}s for battery & energy recharge...")
 
                     for remaining in range(wait_seconds, 0, -1):
                         self.last_status = f"Resting & recharging energy..."
                         self.next_action_eta = f"Recharge ends in {remaining}s"
-                        live.update(self.create_dashboard(countdown_sec=remaining))
+                        update_hud(remaining)
                         time.sleep(1.0)
 
-                    # Refresh authoritative server balance after sleeping
                     self.last_status = "Syncing profile after recharge..."
                     self.next_action_eta = "Syncing with server..."
-                    live.update(self.create_dashboard())
+                    update_hud()
                     self.refresh_me()
                     self.cycle_count += 1
                     self.log(f"Recharged! Energy: {self.energy}/{self.max_energy}. Starting cycle #{self.cycle_count}", "green")
+                    console.print(f"✅ [Rignite Cycle #{self.cycle_count}] Recharged! Energy: {self.energy}/{self.max_energy} | Coins: {self.coins:,}")
+                    self.emit_telemetry("recharge_cycle_complete")
                     continue
 
                 # -------------------------------------------------------------
@@ -630,24 +700,24 @@ class RigniteClient:
 
                 for _ in range(max_batch):
                     self.telemetry.record_tap()
-
-                    # Fast single-finger cadence (~140ms - 190ms, ~5.5 - 6.5 taps/s)
                     tap_delay = max(0.10, min(0.24, random.gauss(0.165, 0.028)))
                     self.last_status = f"Fast-tapping (Pole: {self.telemetry.last_pole})..."
-                    live.update(self.create_dashboard())
+                    update_hud()
                     time.sleep(tap_delay)
 
                 # -------------------------------------------------------------
                 # 3. Synchronize Batch to /tap
                 # -------------------------------------------------------------
                 self.last_status = f"Dispatching batch of {max_batch} taps to /tap..."
-                live.update(self.create_dashboard())
+                update_hud()
                 try:
                     result = self.sync_taps(max_batch)
                     accepted = result.get("accepted", max_batch)
                     self.log(f"Synced [bold green]{accepted}[/] taps | Coins: [yellow]{self.coins:,}[/] | Energy: [green]{self.energy}[/]", "white")
+                    console.print(f"⚡ [Rignite Tap] Synced {accepted} taps | Coins: {self.coins:,} | Energy: {self.energy}/{self.max_energy}")
                 except requests.exceptions.RequestException as e:
                     self.log(f"Tap sync error: {e}", "red")
+                    console.print(f"❌ [Rignite Error] Tap sync error: {e}")
                     time.sleep(3)
 
                 # -------------------------------------------------------------
@@ -663,8 +733,12 @@ class RigniteClient:
                 # -------------------------------------------------------------
                 pause_time = random.uniform(0.25, 0.65)
                 self.last_status = f"Micro-pause ({pause_time:.1f}s)..."
-                live.update(self.create_dashboard())
+                update_hud()
                 time.sleep(pause_time)
+
+        finally:
+            if live_ctx:
+                live_ctx.stop()
 
 
 # ==============================================================================
