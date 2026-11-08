@@ -36,6 +36,7 @@ from typing import Dict, Any, Optional, List
 
 from aiohttp import web
 from pyrogram import Client, enums
+from pyrogram.errors import FloodWait, RPCError
 
 # Ensure UTF-8 on Windows
 if sys.platform == "win32":
@@ -596,6 +597,8 @@ class AutoPlayerSupervisor:
         self.loop = asyncio.new_event_loop()
         self.seconds_until_next_report = REPORT_INTERVAL_SECONDS
         self.last_tg_status: str = "Connecting..."
+        self.is_bot_online: bool = False
+        self.flood_wait_until: float = 0.0
         
         self.client = Client(
             "autoplayer_session",
@@ -1104,15 +1107,10 @@ class AutoPlayerSupervisor:
     # BACKGROUND SCHEDULE RUNNER & WEB SERVER
     # --------------------------------------------------------------------------
     async def scheduler_loop(self):
-        self.last_tg_status = "Connecting..."
-        await self.client.start()
-        self.last_tg_status = "Connected & Active"
-        await self.send_startup_messages()
-
-        # Start Web Dashboard
+        # 1. Start Web Dashboard immediately regardless of Telegram status
         web_runner = await self.init_web_app()
 
-        # Self-Pinger Background Task (keeps Render / cloud containers awake)
+        # 2. Start Self-Pinger Background Task
         async def self_pinger_task():
             target_url = PING_URL.strip()
             if not target_url:
@@ -1128,8 +1126,6 @@ class AutoPlayerSupervisor:
                     if not self.is_running:
                         break
                     res = requests.get(target_url, timeout=15)
-                    # Silently logged or in history
-                    timestamp = datetime.now(IST_TZ).strftime("%H:%M:%S")
                     FileLogger.append_log(
                         os.path.join(LOGS_DIR, "pinger.log"),
                         f"Pinged {target_url} -> Status: {res.status_code}"
@@ -1142,22 +1138,73 @@ class AutoPlayerSupervisor:
 
         asyncio.create_task(self_pinger_task())
 
+        # 3. Resilient Telegram Bot Connect / Reconnect Loop (Handles FloodWait & auto-retry)
+        async def telegram_bot_worker():
+            startup_sent = False
+            while self.is_running:
+                if not self.is_bot_online:
+                    try:
+                        self.last_tg_status = "Connecting to Telegram..."
+                        await self.client.start()
+                        self.is_bot_online = True
+                        self.flood_wait_until = 0.0
+                        self.last_tg_status = "Connected & Active"
+                        print("🤖 [Telegram Bot] Connected successfully.")
+
+                        if not startup_sent:
+                            await self.send_startup_messages()
+                            startup_sent = True
+                    except FloodWait as fw:
+                        wait_sec = int(fw.value)
+                        self.flood_wait_until = time.time() + wait_sec
+                        self.is_bot_online = False
+                        msg = f"FloodWait ({wait_sec}s required). Gameplay continuing uninhibited..."
+                        self.last_tg_status = f"Rate-Limited ({wait_sec}s remaining)"
+                        print(f"⚠️ [Telegram Bot] {msg}")
+                        FileLogger.append_log(os.path.join(LOGS_DIR, "telegram_bot.log"), msg)
+                        await asyncio.sleep(wait_sec + 2)
+                        continue
+                    except Exception as ex:
+                        self.is_bot_online = False
+                        self.last_tg_status = f"Connect Error: {ex}"
+                        print(f"⚠️ [Telegram Bot] Error: {ex}. Retrying in 30s...")
+                        await asyncio.sleep(30)
+                        continue
+
+                await asyncio.sleep(5)
+
+        asyncio.create_task(telegram_bot_worker())
+
+        # 4. Hourly Reporting Countdown & Trigger Loop
         while self.is_running:
             try:
                 for _ in range(REPORT_INTERVAL_SECONDS):
                     if not self.is_running:
                         break
                     self.seconds_until_next_report -= 1
+
+                    # Update live FloodWait countdown display in status if waiting
+                    if not self.is_bot_online and self.flood_wait_until > time.time():
+                        rem = int(self.flood_wait_until - time.time())
+                        self.last_tg_status = f"FloodWait ({rem // 60}m {rem % 60}s remaining - Gameplay Active)"
+
                     await asyncio.sleep(1)
 
                 if self.is_running:
                     self.seconds_until_next_report = REPORT_INTERVAL_SECONDS
-                    await self.send_hourly_reports()
+                    if self.is_bot_online:
+                        await self.send_hourly_reports()
+                    else:
+                        print(f"⏳ [Hourly Report] Telegram Bot is currently offline/waiting. Game data preserved in /logs/.")
             except Exception as e:
                 await asyncio.sleep(5)
 
         await web_runner.cleanup()
-        await self.client.stop()
+        if self.is_bot_online:
+            try:
+                await self.client.stop()
+            except Exception:
+                pass
 
     # --------------------------------------------------------------------------
     # RESILIENCE & WATCHDOG MONITOR
