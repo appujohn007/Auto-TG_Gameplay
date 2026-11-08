@@ -500,6 +500,8 @@ for (const [id, name] of Object.entries(opcodes)) {
   CmdToId[name] = parseInt(id, 10);
 }
 
+let webAppLaunchUrl = '';
+
 // Telemetry state tracker for supervisor
 function emitTelemetry(eventType, extra = {}) {
   try {
@@ -513,6 +515,7 @@ function emitTelemetry(eventType, extra = {}) {
       empty_slots: currentGrid.filter(c => !c || c === 0).length,
       user_name: (userInfo && userInfo.name) || '',
       nick_name: (userInfo && userInfo.nickName) || '',
+      web_app_url: webAppLaunchUrl,
       timestamp: Date.now(),
       ...extra
     };
@@ -616,7 +619,7 @@ async function getAuthSession() {
   console.log(` Authenticated! User: ${session.nickName} (${session.name})`);
   
   // Construct direct Telegram WebApp game launch URL with initData
-  const webAppLaunchUrl = `https://game.catizen.ai/#tgWebAppData=${encodeURIComponent(smData.initData)}&tgWebAppVersion=8.0&tgWebAppPlatform=weba`;
+  webAppLaunchUrl = `https://game.catizen.ai/#tgWebAppData=${encodeURIComponent(smData.initData)}&tgWebAppVersion=8.0&tgWebAppPlatform=weba`;
   emitTelemetry('session_update', { web_app_url: webAppLaunchUrl });
 
   return session;

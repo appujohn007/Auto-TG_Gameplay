@@ -209,7 +209,11 @@ class GameTracker:
         if not self.period_start_state:
             self.period_start_state = dict(payload)
             
+        # Preserve sticky attributes like web_app_url across metrics updates
+        prev_url = self.current_state.get("web_app_url", "")
         self.current_state = dict(payload)
+        if not self.current_state.get("web_app_url") and prev_url:
+            self.current_state["web_app_url"] = prev_url
         event_entry = {
             "time": now.strftime("%H:%M:%S"),
             "data": payload
@@ -847,6 +851,28 @@ class AutoPlayerSupervisor:
     # --------------------------------------------------------------------------
     # TELEGRAM REPORT DISPATCHER
     # --------------------------------------------------------------------------
+    async def safe_send_topic_message(self, topic_id: int, text: str):
+        """Send message to forum topic with automatic compatibility fallback."""
+        try:
+            return await self.client.send_message(
+                chat_id=TARGET_CHAT_ID,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+        except TypeError as e:
+            if "message_thread_id" in str(e):
+                # Older Pyrogram versions use reply_to_message_id for forum topic threads
+                return await self.client.send_message(
+                    chat_id=TARGET_CHAT_ID,
+                    reply_to_message_id=topic_id,
+                    text=text,
+                    parse_mode=enums.ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+            raise e
+
     async def send_hourly_reports(self):
         now_ist = datetime.now(IST_TZ)
         cat_time_from = self.catizen_tracker.period_start_time.strftime("%I:%M %p")
@@ -857,13 +883,7 @@ class AutoPlayerSupervisor:
         try:
             cat_url = self.generate_catizen_telegraph(date_str, cat_time_from, cat_time_to)
             cat_text = self.build_catizen_tg_message(date_str, cat_time_from, cat_time_to, cat_url)
-            await self.client.send_message(
-                chat_id=TARGET_CHAT_ID,
-                message_thread_id=TOPIC_CATIZEN,
-                text=cat_text,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            await self.safe_send_topic_message(TOPIC_CATIZEN, cat_text)
             self.catizen_tracker.reset_period()
         except Exception as e:
             self.catizen_tracker.add_log(f"Telegram dispatch error: {e}")
@@ -872,13 +892,7 @@ class AutoPlayerSupervisor:
         try:
             rig_url = self.generate_rignite_telegraph(date_str, cat_time_from, cat_time_to)
             rig_text = self.build_rignite_tg_message(date_str, cat_time_from, cat_time_to, rig_url)
-            await self.client.send_message(
-                chat_id=TARGET_CHAT_ID,
-                message_thread_id=TOPIC_RIGNITE,
-                text=rig_text,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            await self.safe_send_topic_message(TOPIC_RIGNITE, rig_text)
             self.rignite_tracker.reset_period()
         except Exception as e:
             self.rignite_tracker.add_log(f"Telegram dispatch error: {e}")
@@ -1104,24 +1118,12 @@ class AutoPlayerSupervisor:
         )
 
         try:
-            await self.client.send_message(
-                chat_id=TARGET_CHAT_ID,
-                message_thread_id=TOPIC_CATIZEN,
-                text=catizen_msg,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            await self.safe_send_topic_message(TOPIC_CATIZEN, catizen_msg)
         except Exception as e:
             self.catizen_tracker.add_log(f"Catizen startup alert error: {e}")
 
         try:
-            await self.client.send_message(
-                chat_id=TARGET_CHAT_ID,
-                message_thread_id=TOPIC_RIGNITE,
-                text=rignite_msg,
-                parse_mode=enums.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            await self.safe_send_topic_message(TOPIC_RIGNITE, rignite_msg)
         except Exception as e:
             self.rignite_tracker.add_log(f"Rignite startup alert error: {e}")
 
