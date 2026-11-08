@@ -1,0 +1,210 @@
+# AI SYSTEM ARCHITECTURE & INTEGRATION SPECIFICATION (AI.doc)
+================================================================================
+Document Version: 2.1.0
+System Designation: Auto-TG Gameplay Supervisor & Multi-Game Autoplay Platform
+Primary Language Stacks: Python 3.10+, Node.js 18+ (CommonJS)
+Target Platforms: Telegram WebApps (Catizen, Rignite)
+
+--------------------------------------------------------------------------------
+1. EXECUTIVE OVERVIEW FOR AI AGENTS
+--------------------------------------------------------------------------------
+This repository is an autonomous gameplay supervisor designed to operate 24/7
+without human intervention. It coordinates, monitors, and recovers sub-engines
+that interact with Telegram mini-apps.
+
+Core Pillars:
+1. Process Supervision (`auto_player.py`):
+   Spawns child processes (`node play_catizen.js`, `python rignite_tap_engine.py`),
+   captures stdout streams non-blockingly, intercepts structured IPC JSON lines,
+   and manages process lifecycle (auto-restart with exponential backoff).
+2. Live Observability (Aiohttp Web Dashboard on port 8080):
+   Serves a single-page reactive dashboard (`WEB_DASHBOARD_HTML`) backed by
+   REST endpoints (`/api/status`, `/api/control`).
+3. Reporting & Auditing:
+   Aggregates periodic metrics (1-hour window), renders rich HTML audit reports
+   to Telegraph (`api.graph.org`), and dispatches notifications via Pyrogram
+   to Telegram Topics (Chat: `-1003959353966`, Topic 2: Catizen, Topic 4: Rignite).
+
+--------------------------------------------------------------------------------
+2. COMPONENT MAP & FILE STRUCTURE
+--------------------------------------------------------------------------------
+.
+├── auto_player.py
+│   ├── AutoPlayerSupervisor: Main thread orchestrator.
+│   ├── GameTracker: State container, log buffer, and delta math engine.
+│   ├── TelegraphManager: Graph.org / Telegra.ph API client.
+│   ├── Web Server: Aiohttp routes (/api/status, /api/control).
+│   └── Telegram Bot Runner: Pyrogram async event loop.
+│
+├── Rignite/
+│   └── rignite_tap_engine.py
+│       ├── RigniteClient: Main game loop and HTTP API communicator.
+│       ├── HumanTapTelemetry: Mathematical simulation of front-end touch `go()` tapfp algorithm.
+│       ├── simulate_rewarded_ad(): 2-step ad intent/complete handshake.
+│       └── emit_telemetry(): Flushes structured `[AUTOPLAYER_METRIC]` JSON to stdout.
+│
+├── CATIZEN/
+│   ├── play_catizen.js: WebSocket game agent handling board state and cat merges.
+│   ├── pb_bundle.js: Protocol Buffers binary codec for Catizen network frames.
+│   └── CATIZEN_PROTOCOL_GUIDE.md: Packet layout and opcode dictionary.
+│
+└── logs/
+    ├── catizen_history.log: Catizen rolling console logs.
+    ├── rignite_history.log: Rignite rolling console logs.
+    └── events_audit.jsonl: Structured audit event log in JSON Lines format.
+
+--------------------------------------------------------------------------------
+3. INTER-PROCESS COMMUNICATION (IPC) SPECIFICATION
+--------------------------------------------------------------------------------
+The supervisor (`auto_player.py`) executes sub-engines as child processes using
+`subprocess.Popen(..., stdout=subprocess.PIPE, stderr=subprocess.STDOUT)`.
+
+Child processes communicate metrics to the supervisor by writing a single line to stdout:
+`[AUTOPLAYER_METRIC] {"game": "<game_name>", "type": "<event_type>", ...}`
+
+Protocol Rules for AI Modifying or Adding Engines:
+1. Always prefix telemetry JSON with `[AUTOPLAYER_METRIC] `.
+2. Flush stdout immediately (`sys.stdout.flush()` in Python or `process.stdout.write()` in Node).
+3. Payload schema standard:
+   {
+       "game": "rignite" | "catizen",
+       "type": "tap_sync" | "merge" | "recharge_start" | "ad_watching" | "auth_success",
+       "user": "<telegram_username>",
+       "coins" / "gold": <int>,
+       "energy": <int>,
+       "max_energy": <int>,
+       "action_status": "<human_readable_action>",
+       "next_action": "<countdown_or_next_step>",
+       "rate_cps": <float>,
+       "rate_cpm": <int>,
+       "coins_delta": <int>,
+       "session_taps": <int>,
+       "timestamp": <epoch_ms>
+   }
+
+When `auto_player.py` reads a line containing `[AUTOPLAYER_METRIC]`:
+- It extracts the JSON payload and routes it to `tracker.record_metric(data)`.
+- It suppresses the raw metric string from the human-facing log buffer.
+- Standard stdout strings (without the marker) are written to `tracker.add_log(line)`
+  and persisted to the game's log file in `logs/`.
+
+--------------------------------------------------------------------------------
+4. RIGNITE TAP ENGINE REVERSE-ENGINEERED SPECIFICATION
+--------------------------------------------------------------------------------
+Target Service: `https://api.rignite.app`
+Auth Source: Telegram Mini App `initData` via `https://tg-game-sessionmaker.onrender.com`
+
+Auth Protocol:
+- Headers:
+  - `x-init-data`: Raw URL-encoded Telegram WebApp initData string
+  - `content-type`: `application/json`
+  - `x-rignite-ad-policy`: `adexium_house:2026-09-06.1`
+- Request: `POST /auth` with `{"lang": "en", "dev": "<uuid4>", "fp": "<YYYY-MM-DD>"}`
+- Response contains: `sessionId` (used in subsequent headers as `x-session`), `user` profile.
+
+Tapping Protocol (`POST /tap`):
+- Payload: `{"count": <accepted_taps>}` (usually 14-24 taps per batch).
+- Anti-Cheat Telemetry:
+  The engine simulates `HumanTapTelemetry`:
+  - `ivort`: Average tap interval in ms (120ms - 240ms).
+  - `ivcv`: Coefficient of variation of tap intervals (0.12 - 0.35).
+  - `xystd`: Spatial variance across button coordinates.
+  - `imza`: 32-bit hash computed via rolling prime multiplier (x31 >>> 0).
+  - Alternation: Organic swapping between Left (`L`) and Right (`R`) poles (~88%).
+  - At 500 taps, sends authentic telemetry payload to `POST /client-log`.
+
+Energy & Refill Lifecycle:
+- Energy capacity defaults to 1000 - 3500 points.
+- When energy drops <= 15:
+  1. Instant Daily Boost: Checks `fullEnergyLeft > 0`. If available, calls `POST /boost/full-energy`.
+  2. Rewarded Ads: If daily boost is depleted, uses `POST /ad/intent` (type: `full_energy`),
+     simulates viewing for 16-25s, then dispatches `POST /ad/complete` with valid timing metadata.
+  3. Natural Recharge: If ads are in cooldown or depleted, sleeps 60-150s while battery recharges,
+     emitting live countdown metrics every 4s.
+
+Session Recovery:
+- Listens for HTTP 401 Unauthorized -> triggers `fetch_fresh_init_data()` and re-authenticates.
+- Listens for HTTP 429 Too Many Requests -> parses `x-ratelimit-reset` and sleeps.
+- Proactively refreshes the session token every 40 minutes.
+
+--------------------------------------------------------------------------------
+5. CATIZEN PROTOCOL & MERGE SPECIFICATION
+--------------------------------------------------------------------------------
+Protocol Stack: WebSockets over TLS (`wss://`) with binary Protocol Buffers encoding.
+
+Board Mechanics:
+- 12 slots arranged in a 3x4 grid.
+- Each cat on board has a level (e.g., Lvl 1 to Lvl 50+).
+- Two cats of equal level can be merged to yield one cat of `level + 1`.
+- The engine identifies matching pairs on the board, generates the binary drag-and-merge
+  packet, and emits it over the WebSocket.
+- Automatically buys low-level cats with accumulated gold whenever slots are vacant.
+
+--------------------------------------------------------------------------------
+6. WEB DASHBOARD API & CONTROL CONTRACT
+--------------------------------------------------------------------------------
+The dashboard server runs on `http://0.0.0.0:<WEB_PORT>` (default: 8080).
+
+Endpoints:
+1. `GET /`: Returns single-file HTML/CSS/JS dashboard (`WEB_DASHBOARD_HTML`).
+2. `GET /api/status`:
+   Returns JSON payload:
+   {
+       "uptime": "2h 15m 30s",
+       "countdown": "35m 12s",
+       "tg_status": "Online",
+       "catizen": {
+           "status": "ONLINE & ACTIVE" | "PAUSED BY USER" | "RECONNECTING",
+           "enabled": true | false,
+           "web_app_url": "<signed_game_url>",
+           "gold": <int>,
+           "gold_delta": <int>,
+           "gold_rate": <int>,
+           "board": [0, 1, 1, 2, ...], // 12 elements
+           "logs": [{"time": "21:30:00", "text": "..."}]
+       },
+       "rignite": {
+           "status": "ONLINE & ACTIVE" | "PAUSED BY USER",
+           "enabled": true | false,
+           "coins": <int>,
+           "coins_delta": <int>,
+           "coins_rate": <float>,
+           "coins_cpm": <int>,
+           "energy": <int>,
+           "max_energy": <int>,
+           "battery_energy": <int>,
+           "battery_cap": <int>,
+           "session_taps": <int>,
+           "tap_cadence": <float>,
+           "boosts": <int>,
+           "ad_energy_left": <int>,
+           "action_status": "<status_text>",
+           "next_action": "<countdown_or_next_step>",
+           "logs": [{"time": "21:30:00", "text": "..."}]
+       }
+   }
+
+3. `POST /api/control?game=<catizen|rignite>&action=<stop|resume>`:
+   - `action=stop`: Sets `tracker.is_enabled = False`, terminates child process handle.
+   - `action=resume`: Sets `tracker.is_enabled = True`, calls `reset_metrics_baseline()`.
+     CRITICAL: `reset_metrics_baseline()` resets `start_state` and `start_coins` to prevent
+     spent coins or gold during pauses from skewing deltas and velocity calculations.
+
+--------------------------------------------------------------------------------
+7. BEST PRACTICES FOR EXTENDING OR DEBUGGING
+--------------------------------------------------------------------------------
+1. Modifying auto_player.py:
+   - Keep `WEB_DASHBOARD_HTML` self-contained (inline CSS & JS) so it runs cleanly
+     in headless containers without separate asset hosting.
+   - Never block the supervisor thread. Subprocess I/O must remain in dedicated threads.
+   - Always run `python -m py_compile auto_player.py` before committing.
+
+2. Modifying Rignite Engine:
+   - Never send static or flat intervals; always pass tap batches through `HumanTapTelemetry`.
+   - Ensure all new action states emit telemetry with `action_status` and `next_action`
+     so the Web Dashboard refill banner reflects real-time status.
+
+3. Git & Deployment:
+   - Repository: `https://github.com/appujohn007/Auto-TG_Gameplay.git`
+   - Default branch: `main`
+   - Use clean conventional commit messages (e.g. `feat: ...`, `fix: ...`, `docs: ...`).
