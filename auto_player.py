@@ -328,6 +328,8 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
       cursor: pointer; border: none; outline: none; border-radius: 8px; font-weight: 700;
       font-size: 12px; padding: 6px 14px; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 6px;
     }
+    .btn-open { background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); text-decoration: none; }
+    .btn-open:hover { background: rgba(56, 189, 248, 0.35); color: #fff; }
     .btn-stop { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
     .btn-stop:hover { background: rgba(239, 68, 68, 0.4); color: #fff; }
     .btn-resume { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); }
@@ -357,7 +359,8 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="game-card">
       <div class="game-header">
         <div class="game-title">🐱 Catizen Automation <span class="pill pill-cat">Topic #2</span></div>
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <a id="cat-open-btn" class="btn-action btn-open" href="#" target="_blank" style="display: none;">🎮 Open Game</a>
           <button id="cat-btn" class="btn-action btn-stop" onclick="toggleGame('catizen')">🛑 Stop</button>
           <span id="cat-state" class="pill pill-cat">ONLINE</span>
         </div>
@@ -409,7 +412,8 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="game-card">
       <div class="game-header">
         <div class="game-title">⚡ Rignite Tap Engine <span class="pill pill-rig">Topic #4</span></div>
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <a id="rig-open-btn" class="btn-action btn-open" href="#" target="_blank" style="display: none;">🎮 Open Game</a>
           <button id="rig-btn" class="btn-action btn-stop" onclick="toggleGame('rignite')">🛑 Stop</button>
           <span id="rig-state" class="pill pill-rig">ONLINE</span>
         </div>
@@ -496,6 +500,14 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
           catBtn.innerText = '▶️ Resume';
         }
 
+        const catOpenBtn = document.getElementById('cat-open-btn');
+        if (cat.web_app_url) {
+          catOpenBtn.href = cat.web_app_url;
+          catOpenBtn.style.display = 'inline-flex';
+        } else {
+          catOpenBtn.style.display = 'none';
+        }
+
         document.getElementById('cat-gold').innerText = cat.gold.toLocaleString();
         document.getElementById('cat-delta').innerText = (cat.gold_delta >= 0 ? '+' : '') + cat.gold_delta.toLocaleString();
         document.getElementById('cat-rate').innerText = `${cat.gold_rate.toLocaleString()}/s`;
@@ -530,6 +542,14 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         } else {
           rigBtn.className = 'btn-action btn-resume';
           rigBtn.innerText = '▶️ Resume';
+        }
+
+        const rigOpenBtn = document.getElementById('rig-open-btn');
+        if (rig.web_app_url) {
+          rigOpenBtn.href = rig.web_app_url;
+          rigOpenBtn.style.display = 'inline-flex';
+        } else {
+          rigOpenBtn.style.display = 'none';
         }
         document.getElementById('rig-coins').innerText = rig.coins.toLocaleString();
         document.getElementById('rig-delta').innerText = (rig.coins_delta >= 0 ? '+' : '') + rig.coins_delta.toLocaleString();
@@ -730,6 +750,7 @@ class AutoPlayerSupervisor:
             "catizen": {
                 "status": self.catizen_tracker.status_pill,
                 "enabled": self.catizen_tracker.is_enabled,
+                "web_app_url": c_state.get("web_app_url", ""),
                 "gold": c_curr_gold,
                 "gold_delta": c_gold_delta,
                 "gold_rate": int(c_gold_rate),
@@ -744,6 +765,7 @@ class AutoPlayerSupervisor:
             "rignite": {
                 "status": self.rignite_tracker.status_pill,
                 "enabled": self.rignite_tracker.is_enabled,
+                "web_app_url": r_state.get("web_app_url", ""),
                 "coins": r_curr_coins,
                 "coins_delta": r_coins_delta,
                 "coins_rate": r_coins_rate,

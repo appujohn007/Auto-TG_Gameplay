@@ -614,6 +614,11 @@ async function getAuthSession() {
 
   const session = await loginRes.json();
   console.log(` Authenticated! User: ${session.nickName} (${session.name})`);
+  
+  // Construct direct Telegram WebApp game launch URL with initData
+  const webAppLaunchUrl = `https://game.catizen.ai/#tgWebAppData=${encodeURIComponent(smData.initData)}&tgWebAppVersion=8.0&tgWebAppPlatform=weba`;
+  emitTelemetry('session_update', { web_app_url: webAppLaunchUrl });
+
   return session;
 }
 

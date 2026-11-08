@@ -244,6 +244,8 @@ class RigniteClient:
             }
             if extra:
                 payload.update(extra)
+            if self.init_data:
+                payload["web_app_url"] = f"https://app.rignite.app/#tgWebAppData={urllib.parse.quote(self.init_data)}&tgWebAppVersion=8.0&tgWebAppPlatform=weba"
             # Flush directly to stdout
             sys.stdout.write(f"\n[AUTOPLAYER_METRIC] {json.dumps(payload)}\n")
             sys.stdout.flush()
