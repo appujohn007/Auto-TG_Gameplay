@@ -353,6 +353,9 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
     .btn-stop:hover { background: rgba(239, 68, 68, 0.4); color: #fff; }
     .btn-resume { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); }
     .btn-resume:hover { background: rgba(34, 197, 94, 0.4); color: #fff; }
+    .btn-ad-refill { background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); }
+    .btn-ad-refill:hover { background: rgba(251, 191, 36, 0.4); color: #fff; }
+    .btn-ad-refill:disabled { opacity: 0.5; cursor: not-allowed; }
     .footer {
       margin-top: 24px; text-align: center; color: var(--text-muted); font-size: 12px;
       display: flex; justify-content: space-between; align-items: center;
@@ -433,6 +436,7 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="game-title">⚡ Rignite Tap Engine <span class="pill pill-rig">Topic #4</span></div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <a id="rig-open-btn" class="btn-action btn-open" href="#" target="_blank" style="display: none;">🎮 Open Game</a>
+          <button id="rig-ad-btn" class="btn-action btn-ad-refill" onclick="triggerManualAdRefill()" title="Watch Rewarded Ad to Refill Tank Energy">🎬 Watch Ad Refill</button>
           <button id="rig-btn" class="btn-action btn-stop" onclick="toggleGame('rignite')">🛑 Stop</button>
           <span id="rig-state" class="pill pill-rig">ONLINE</span>
         </div>
@@ -459,14 +463,14 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
           <div id="rig-tap-cadence" style="font-size: 11px; color: #94a3b8; margin-top: 4px;">0.0 taps/s</div>
         </div>
         <div class="stat-box">
+          <div class="stat-label">Colony Passive Coins</div>
+          <div id="rig-colony-coins" class="stat-val" style="color: #38bdf8;">0</div>
+          <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">Excluded from Tap CPM</div>
+        </div>
+        <div class="stat-box">
           <div class="stat-label">Boosts & Ad Refills</div>
           <div id="rig-boosts" class="stat-val" style="color: #fff;">0</div>
           <div id="rig-ad-boosts" style="font-size: 11px; color: #38bdf8; margin-top: 4px;">Ads: 0 left</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">Autonomous Cycle</div>
-          <div id="rig-cycle" class="stat-val" style="color: #c084fc;">#1</div>
-          <div id="rig-batches" style="font-size: 11px; color: #94a3b8; margin-top: 4px;">0 batches synced</div>
         </div>
       </div>
 
@@ -588,6 +592,7 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('rig-rate-cpm').innerText = `${rig.coins_cpm.toLocaleString()} coins/min`;
         document.getElementById('rig-taps').innerText = rig.session_taps.toLocaleString();
         document.getElementById('rig-tap-cadence').innerText = `${rig.tap_cadence.toFixed(1)} taps/s cadence`;
+        document.getElementById('rig-colony-coins').innerText = (rig.colony_coins_total || 0).toLocaleString();
         document.getElementById('rig-boosts').innerText = `${rig.boosts} Instant`;
         document.getElementById('rig-ad-boosts').innerText = `Ad Refills: ${rig.ad_energy_left.toLocaleString()} left`;
         document.getElementById('rig-cycle').innerText = `#${rig.cycle}`;
@@ -650,6 +655,28 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         setTimeout(() => { btn.disabled = false; updateDashboard(); }, 500);
       } catch (e) {
         console.error('Toggle error:', e);
+      }
+    }
+
+    async function triggerManualAdRefill() {
+      const btn = document.getElementById('rig-ad-btn');
+      try {
+        btn.disabled = true;
+        btn.innerText = '⏳ Triggering...';
+        const res = await fetch('/api/control?game=rignite&action=watch_ad_refill', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          btn.innerText = '🎬 Ad Sent!';
+          setTimeout(() => { btn.innerText = '🎬 Watch Ad Refill'; btn.disabled = false; }, 3000);
+        } else {
+          btn.innerText = '⚠️ Failed';
+          setTimeout(() => { btn.innerText = '🎬 Watch Ad Refill'; btn.disabled = false; }, 2000);
+        }
+        updateDashboard();
+      } catch (e) {
+        console.error('Trigger ad refill error:', e);
+        btn.innerText = '🎬 Watch Ad Refill';
+        btn.disabled = false;
       }
     }
 
@@ -845,6 +872,7 @@ class AutoPlayerSupervisor:
                 "action_status": r_state.get("action_status", "Tapping Active"),
                 "next_action": r_state.get("next_action", "Ready"),
                 "batches_synced": r_batches,
+                "colony_coins_total": r_state.get("colony_coins_total", 0),
                 "cycle": r_state.get("cycle_count", 1),
                 "logs": self.rignite_tracker.raw_logs[-35:]
             }
@@ -892,6 +920,16 @@ class AutoPlayerSupervisor:
                     target.reset_metrics_baseline()
                     target.add_log(f"▶️ [CONTROL] Autoplay resumed via dashboard. Metrics reset for fresh session.")
                     return web.json_response({"ok": True, "status": "resumed", "game": game})
+                elif action == "watch_ad_refill" and game == "rignite":
+                    # Write command to IPC file for rignite engine to consume
+                    cmd_file = os.path.join(LOGS_DIR, "rignite_cmd.json")
+                    try:
+                        with open(cmd_file, "w", encoding="utf-8") as f:
+                            json.dump({"action": "watch_ad_refill", "ts": time.time()}, f)
+                        target.add_log("🎬 [CONTROL] Manual watch ad & refill requested from Dashboard.")
+                        return web.json_response({"ok": True, "status": "ad_command_queued", "game": game})
+                    except Exception as ce:
+                        return web.json_response({"ok": False, "error": str(ce)}, status=500)
                 else:
                     return web.json_response({"ok": False, "error": "Invalid action"}, status=400)
             except Exception as e:

@@ -54,6 +54,12 @@ AUTH_ENDPOINT = f"{API_BASE_URL}/auth"
 TAP_ENDPOINT = f"{API_BASE_URL}/tap"
 ME_ENDPOINT = f"{API_BASE_URL}/me"
 BOOST_FULL_ENERGY = f"{API_BASE_URL}/boost/full-energy"
+COLLECT_SHIFT_ENDPOINT = f"{API_BASE_URL}/shift/collect"
+COLLECT_BUILDING_ENDPOINT = f"{API_BASE_URL}/shift/collect-building"
+SANTRAL_TOPLA_ENDPOINT = f"{API_BASE_URL}/santral/topla"
+DAILY_CLAIM_ENDPOINT = f"{API_BASE_URL}/daily/claim"
+SURPRISE_CLAIM_ENDPOINT = f"{API_BASE_URL}/surprise/claim"
+FRIENDS_CLAIM_ENDPOINT = f"{API_BASE_URL}/friends/claim"
 AD_INTENT_ENDPOINT = f"{API_BASE_URL}/ad/intent"
 AD_COMPLETE_ENDPOINT = f"{API_BASE_URL}/ad/complete"
 CLIENT_LOG_ENDPOINT = f"{API_BASE_URL}/client-log"
@@ -61,6 +67,11 @@ SESSION_MAKER_URL = "https://tg-game-sessionmaker.onrender.com/api/get-init-data
 
 DEFAULT_BOT = "RigniteBot"
 DEFAULT_SHORT_NAME = "app"
+
+# Command IPC directory for dashboard interactions
+IPC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+RIGNITE_CMD_FILE = os.path.join(IPC_DIR, "rignite_cmd.json")
+
 
 
 def create_robust_session() -> requests.Session:
@@ -218,6 +229,15 @@ class RigniteClient:
         self.batches_sent: int = 0
         self.cycle_count: int = 1
         self.last_ad_energy_time: float = 0.0  # Tracks when ad energy refill was last consumed
+        self.burst_target: int = 0             # Target ads in current burst (e.g. 2-5)
+        self.burst_count: int = 0              # Ads watched so far in current burst
+        self.colony_coins_total: int = 0       # Total colony coins collected separately
+        self.last_colony_collect_time: float = 0.0  # Timestamp of last colony collection
+        self.next_colony_collect_interval: float = float(random.randint(600, 1800))  # Natural 10-30 min gap
+        self.last_daily_claim_time: float = 0.0     # Timestamp of last daily reward check
+        self.last_surprise_claim_time: float = 0.0  # Timestamp of last surprise box check
+        self.last_santral_collect_time: float = 0.0 # Timestamp of last power plant check
+        self.last_friends_claim_time: float = 0.0   # Timestamp of last friends commission check
         self.next_action_eta: str = "Tapping Active"
         self.last_status: str = "Initialized"
         self.recent_logs: list = []
@@ -257,6 +277,7 @@ class RigniteClient:
                 "total_accepted": self.total_accepted,
                 "cycle_count": self.cycle_count,
                 "batches_sent": self.batches_sent,
+                "colony_coins_total": self.colony_coins_total,
                 "timestamp": int(time.time() * 1000)
             }
             if extra:
@@ -392,6 +413,37 @@ class RigniteClient:
             self.log(f"Profile refresh error: {e}", "red")
         return None
 
+    def check_manual_commands(self):
+        """Checks for pending manual user commands sent from the dashboard."""
+        if not os.path.exists(RIGNITE_CMD_FILE):
+            return
+        try:
+            with open(RIGNITE_CMD_FILE, "r", encoding="utf-8") as f:
+                cmd_data = json.load(f)
+            # Remove file immediately so command is consumed only once
+            try:
+                os.remove(RIGNITE_CMD_FILE)
+            except Exception:
+                pass
+            
+            action = cmd_data.get("action")
+            if action == "watch_ad_refill":
+                self.log("Manual Refill Ad command triggered from Dashboard!", "bold cyan")
+                self.last_status = "Manual Ad Refill requested via Dashboard..."
+                self.next_action_eta = "Watching Ad..."
+                self.emit_telemetry("ad_manual_triggered", {"action_status": self.last_status, "next_action": self.next_action_eta})
+                if self.simulate_rewarded_ad("full_energy"):
+                    self.log(f"Manual Ad Refill complete! Energy: {self.energy}/{self.max_energy}", "bold green")
+                else:
+                    self.log("Manual Ad Refill could not be completed (cooldown or rejected).", "yellow")
+        except Exception as e:
+            try:
+                if os.path.exists(RIGNITE_CMD_FILE):
+                    os.remove(RIGNITE_CMD_FILE)
+            except Exception:
+                pass
+            self.log(f"Error checking manual command: {e}", "red")
+
     def simulate_rewarded_ad(self, ad_type: str = "full_energy") -> bool:
         """
         Executes a human-like 2-step ad handshake:
@@ -467,6 +519,145 @@ class RigniteClient:
                 return True
         except Exception as e:
             self.log(f"Booster activation error: {e}", "red")
+        return False
+
+    def collect_colony_income(self) -> int:
+        """
+        Collects accumulated colony passive income from POST /shift/collect.
+        Maintains start_coins baseline so passive collection does not distort
+        active tap velocity (coins/s, coins/min) or net tap delta.
+        Handles BATTERY_FULL and ENERJI_DOLU conditions gracefully.
+        """
+        # Proactively check battery energy level before collecting
+        if self.battery_cap > 0 and self.battery_energy >= self.battery_cap:
+            self.log(f"🔋 Battery capacity full ({self.battery_energy}/{self.battery_cap}). Skipping shift collection until energy is consumed.", "dim yellow")
+            return 0
+
+        headers = self._get_auth_headers()
+        try:
+            resp = self.http.post(COLLECT_SHIFT_ENDPOINT, json={}, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                collected = data.get("collected", 0)
+                new_coins = data.get("coins", self.coins)
+                
+                # Update coin balance
+                self.coins = new_coins
+
+                # Adjust start_coins baseline so tap velocity & tap delta ignore colony income
+                if collected > 0 and self.start_coins is not None:
+                    self.start_coins += collected
+                    self.colony_coins_total += collected
+                    self.log(f"🏛️ Collected {collected:,} colony coins (Total colony: {self.colony_coins_total:,})", "bold cyan")
+                    self.emit_telemetry("colony_collect", {
+                        "collected_now": collected,
+                        "action_status": f"Collected {collected:,} colony coins"
+                    })
+                return collected
+            else:
+                try:
+                    err_json = resp.json()
+                    err_code = err_json.get("error", "")
+                    if err_code in ("BATTERY_FULL", "ENERJI_DOLU"):
+                        self.log(f"🔋 Colony collection paused: {err_code} (will retry naturally after battery drain/tapping)", "dim yellow")
+                        return 0
+                except Exception:
+                    pass
+                if resp.status_code not in (400, 409):
+                    self.log(f"Colony collect status HTTP {resp.status_code}", "dim yellow")
+        except Exception as e:
+            self.log(f"Colony collect error: {e}", "dim red")
+        return 0
+
+    def claim_daily_reward(self) -> bool:
+        """Claims daily login streak reward from POST /daily/claim."""
+        headers = self._get_auth_headers()
+        try:
+            resp = self.http.post(DAILY_CLAIM_ENDPOINT, json={}, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                coins_reward = data.get("coins", 0) or data.get("reward", 0)
+                if coins_reward and self.start_coins is not None:
+                    self.start_coins += coins_reward
+                    self.coins += coins_reward
+                self.log(f"🔥 Daily Login Reward claimed successfully! ({data})", "bold green")
+                self.emit_telemetry("daily_claimed", {"action_status": "Daily reward claimed"})
+                return True
+            else:
+                try:
+                    err = resp.json().get("error", "")
+                    if err in ("BATTERY_FULL", "ENERJI_DOLU"):
+                        self.log(f"Daily claim deferred: {err}", "dim yellow")
+                except Exception:
+                    pass
+        except Exception as e:
+            self.log(f"Daily claim error: {e}", "dim red")
+        return False
+
+    def claim_surprise_box(self) -> bool:
+        """Claims mystery / surprise box bonus from POST /surprise/claim."""
+        headers = self._get_auth_headers()
+        try:
+            resp = self.http.post(SURPRISE_CLAIM_ENDPOINT, json={}, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                reward = data.get("reward") or data.get("coins", 0)
+                if isinstance(reward, int) and reward > 0 and self.start_coins is not None:
+                    self.start_coins += reward
+                    self.coins += reward
+                self.log(f"🎁 Surprise / Mystery Box claimed! ({data})", "bold magenta")
+                self.emit_telemetry("surprise_claimed", {"action_status": "Surprise box claimed"})
+                return True
+            else:
+                try:
+                    err = resp.json().get("error", "")
+                    if err in ("BATTERY_FULL", "ENERJI_DOLU"):
+                        self.log(f"Surprise box deferred: {err}", "dim yellow")
+                except Exception:
+                    pass
+        except Exception as e:
+            self.log(f"Surprise claim error: {e}", "dim red")
+        return False
+
+    def collect_power_plant(self, no: int = 1) -> bool:
+        """Collects reactor generation from power plant unit via POST /santral/topla."""
+        if self.battery_cap > 0 and self.battery_energy >= self.battery_cap:
+            return False
+
+        headers = self._get_auth_headers()
+        try:
+            resp = self.http.post(SANTRAL_TOPLA_ENDPOINT, json={"no": no}, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                self.log(f"⚡ Power Plant (Santral #{no}) generation collected! ({data})", "bold cyan")
+                self.refresh_me()
+                return True
+            else:
+                try:
+                    err = resp.json().get("error", "")
+                    if err in ("BATTERY_FULL", "ENERJI_DOLU"):
+                        self.log(f"Santral #{no} collect deferred: {err}", "dim yellow")
+                except Exception:
+                    pass
+        except Exception as e:
+            self.log(f"Santral collect error: {e}", "dim red")
+        return False
+
+    def claim_friends_commission(self) -> bool:
+        """Collects friend referral commissions via POST /friends/claim."""
+        headers = self._get_auth_headers()
+        try:
+            resp = self.http.post(FRIENDS_CLAIM_ENDPOINT, json={}, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                reward = data.get("coins", 0) or data.get("reward", 0)
+                if isinstance(reward, int) and reward > 0 and self.start_coins is not None:
+                    self.start_coins += reward
+                    self.coins += reward
+                self.log(f"👥 Friends commission claimed: {data}", "bold green")
+                return True
+        except Exception:
+            pass
         return False
 
     def _get_auth_headers(self) -> Dict[str, str]:
@@ -568,10 +759,11 @@ class RigniteClient:
 
         stats_table.add_row("Bot Target:", f"@{self.bot_username}", "Player User:", user_display)
         stats_table.add_row("Current Coins:", f"[bold yellow]{self.coins:,}[/]", "Energy Remaining:", f"[bold green]{self.energy}[/] / {self.max_energy}")
-        stats_table.add_row("Net Coins Earned:", f"[bold yellow]+{coins_earned:,}[/]", "Tap Multiplier:", f"[bold magenta]x{self.tap_mult}[/]")
+        stats_table.add_row("Net Tap Delta:", f"[bold yellow]+{coins_earned:,}[/]", "Colony Passive Coins:", f"[bold cyan]{self.colony_coins_total:,}[/]")
+        stats_table.add_row("Tap Multiplier:", f"[bold magenta]x{self.tap_mult}[/]", "Total Taps Synced:", f"[bold green]{self.total_accepted:,}[/]")
         stats_table.add_row("Real Rate (CPS):", f"[bold green]{real_cps:.2f} coins/s[/]", "Real Rate (CPM):", f"[green]{real_cpm:,.0f} coins/m[/]")
         stats_table.add_row("Refill Mode:", refill_mode, "Wait / Next Action:", eta_display)
-        stats_table.add_row("Battery Energy:", f"[cyan]{self.battery_energy:,}[/] / {self.battery_cap:,}", "Total Taps Synced:", f"[bold green]{self.total_accepted:,}[/]")
+        stats_table.add_row("Battery Energy:", f"[cyan]{self.battery_energy:,}[/] / {self.battery_cap:,}", "Bot Target:", f"@{self.bot_username}")
 
         # Progress bar of current Energy capacity
         energy_pct = max(0.0, min(100.0, (self.energy / max(1, self.max_energy)) * 100.0))
@@ -641,22 +833,68 @@ class RigniteClient:
                     self.authenticate()
                     last_session_refresh_time = time.time()
 
+                # Check for manual dashboard commands (e.g. watch ad & refill energy)
+                self.check_manual_commands()
+
                 # -------------------------------------------------------------
-                # 0. Opportunistic Pre-Emptive Ad Energy Refill
+                # 0. Smart Rewarded Ad Energy Top-Up (Probability 75% when energy < 50%)
+                # Ad Burst Logic: watches 2 to 5 ads with 60s cooldown in between,
+                # continuing normal tapping during the cooldown gap!
                 # -------------------------------------------------------------
                 energy_pct = (self.energy / max(1, self.max_energy)) * 100.0
                 time_since_ad = time.time() - self.last_ad_energy_time
-                if self.energy > 15 and energy_pct < 35.0 and time_since_ad > 180 and self.ad_energy_left > 0:
-                    if random.random() < 0.22:
-                        self.log(f"Opportunistic energy top-up: tank at {energy_pct:.0f}% ({self.energy}/{self.max_energy})", "cyan")
-                        self.last_status = "Opportunistic energy top-up via ad..."
-                        self.next_action_eta = "Watching rewarded ad..."
-                        self.emit_telemetry("ad_prep", {"action_status": self.last_status, "next_action": self.next_action_eta})
+
+                # Reset burst state if cooldown between bursts (> 15 minutes) or tank replenished
+                if self.burst_count >= self.burst_target and self.burst_target > 0:
+                    if time_since_ad > 300:
+                        self.burst_count = 0
+                        self.burst_target = 0
+
+                # Trigger ad watch condition:
+                # 1) Mid-burst: burst active and 60s gap has elapsed
+                # 2) New burst: energy < 50%, cooldown >= 60s, and 75% random probability roll
+                is_mid_burst = (self.burst_target > 0 and self.burst_count < self.burst_target and time_since_ad >= 60.0)
+                should_start_burst = (
+                    self.burst_target == 0 and
+                    self.energy > 15 and
+                    energy_pct < 50.0 and
+                    time_since_ad >= 60.0 and
+                    self.ad_energy_left > 0 and
+                    random.random() < 0.75
+                )
+
+                if is_mid_burst or should_start_burst:
+                    if should_start_burst:
+                        # Determine burst session: watch 2 to 5 ads (bounded by available adEnergyLeft)
+                        available = self.ad_energy_left if self.ad_energy_left > 0 else 5
+                        self.burst_target = min(available, random.randint(2, 5))
+                        self.burst_count = 0
+                        self.log(f"⚡ Energy at {energy_pct:.1f}% (<50%). 75% probability triggered: starting {self.burst_target}-ad refill series!", "cyan")
+
+                    current_num = self.burst_count + 1
+                    self.log(f"🎬 Watching Ad {current_num}/{self.burst_target} for energy refill...", "cyan")
+                    self.last_status = f"Watching ad {current_num}/{self.burst_target} to refill energy..."
+                    self.next_action_eta = "Watching rewarded ad..."
+                    self.emit_telemetry("ad_prep", {"action_status": self.last_status, "next_action": self.next_action_eta})
+                    update_hud()
+
+                    if self.simulate_rewarded_ad("full_energy"):
+                        self.burst_count += 1
                         update_hud()
-                        if self.simulate_rewarded_ad("full_energy"):
-                            update_hud()
-                            time.sleep(1.0)
-                            continue
+                        if self.burst_count < self.burst_target:
+                            self.log(f"✅ Ad {self.burst_count}/{self.burst_target} completed! 60s gap started (you may tap while waiting)...", "green")
+                        else:
+                            self.log(f"🎉 Ad series completed ({self.burst_count}/{self.burst_target} ads watched)! Energy: {self.energy}/{self.max_energy}", "bold green")
+                            self.burst_count = 0
+                            self.burst_target = 0
+                        time.sleep(1.0)
+                        # Re-check manual commands before tapping
+                        self.check_manual_commands()
+                        continue
+                    else:
+                        # Ad failed or on server cooldown
+                        self.burst_count = 0
+                        self.burst_target = 0
 
                 # -------------------------------------------------------------
                 # 1. Energy Depletion & Natural Rest Handling
@@ -677,6 +915,7 @@ class RigniteClient:
                             brief_pause = random.randint(30, 65)
                             self.log(f"Natural human pause ({brief_pause}s) before claiming instant refill...", "dim yellow")
                             for remaining in range(brief_pause, 0, -1):
+                                self.check_manual_commands()
                                 self.last_status = f"Brief pause before refill ({remaining}s)..."
                                 self.next_action_eta = f"Refill in {remaining}s"
                                 update_hud(remaining)
@@ -687,8 +926,8 @@ class RigniteClient:
                                 update_hud()
                                 continue
 
-                    # B. Rewarded Ad Energy Refills
-                    if self.ad_energy_left > 0 and random.random() < 0.55:
+                    # B. Rewarded Ad Energy Refills (fallback when depleted)
+                    if self.ad_energy_left > 0 and (time.time() - self.last_ad_energy_time >= 60.0):
                         self.last_status = "Refueling energy via rewarded ad..."
                         self.next_action_eta = "Watching rewarded ad..."
                         self.emit_telemetry("ad_prep", {"action_status": self.last_status, "next_action": self.next_action_eta})
@@ -706,6 +945,7 @@ class RigniteClient:
                     self.emit_telemetry("recharge_start", {"action_status": f"Recharging energy ({wait_seconds}s)", "next_action": f"Recharge ends in {wait_seconds}s"})
 
                     for remaining in range(wait_seconds, 0, -1):
+                        self.check_manual_commands()
                         self.last_status = f"Resting & recharging energy ({remaining}s)..."
                         self.next_action_eta = f"Recharge ends in {remaining}s"
                         update_hud(remaining)
@@ -764,12 +1004,53 @@ class RigniteClient:
                         self.send_client_log(fp_payload)
 
                 # -------------------------------------------------------------
-                # 5. Natural Inter-Batch Pause (1.0s - 2.5s)
+                # 5. Natural Inter-Batch Pause (0.25s - 0.65s)
                 # -------------------------------------------------------------
                 pause_time = random.uniform(0.25, 0.65)
                 self.last_status = f"Micro-pause ({pause_time:.1f}s)..."
                 update_hud()
                 time.sleep(pause_time)
+                self.check_manual_commands()
+
+                # -------------------------------------------------------------
+                # 6. Natural Periodic Colony Passive Income & Rewards Collection
+                # Occurs naturally at calm, organic intervals with good gaps
+                # Separated from tap velocity and net coins delta!
+                # Respects BATTERY_FULL & ENERJI_DOLU limits.
+                # -------------------------------------------------------------
+                now_t = time.time()
+                # A. Colony Income Collection (Every 10 to 30 mins)
+                if (now_t - self.last_colony_collect_time) >= self.next_colony_collect_interval:
+                    self.last_colony_collect_time = now_t
+                    self.next_colony_collect_interval = float(random.randint(600, 1800))
+                    self.last_status = "Collecting colony passive income..."
+                    update_hud()
+                    self.collect_colony_income()
+                    update_hud()
+
+                # B. Power Plant (Santral) generation (Every 15 to 35 mins)
+                if (now_t - self.last_santral_collect_time) >= 1200:
+                    self.last_santral_collect_time = now_t + random.randint(-180, 420)
+                    self.collect_power_plant(no=1)
+                    update_hud()
+
+                # C. Daily Streak Reward Check (Every 4 to 8 hours)
+                if (now_t - self.last_daily_claim_time) >= 14400:
+                    self.last_daily_claim_time = now_t + random.randint(0, 3600)
+                    self.claim_daily_reward()
+                    update_hud()
+
+                # D. Surprise Box Check (Every 30 to 60 mins)
+                if (now_t - self.last_surprise_claim_time) >= 1800:
+                    self.last_surprise_claim_time = now_t + random.randint(0, 900)
+                    self.claim_surprise_box()
+                    update_hud()
+
+                # E. Friend Referrals Commission (Every 1 to 2 hours)
+                if (now_t - self.last_friends_claim_time) >= 3600:
+                    self.last_friends_claim_time = now_t + random.randint(0, 1800)
+                    self.claim_friends_commission()
+                    update_hud()
 
         finally:
             if live_ctx:
