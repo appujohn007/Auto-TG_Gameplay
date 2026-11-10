@@ -478,7 +478,11 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
       <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Refill & Engine Action</span>
-          <span id="rig-action-badge" class="pill" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">ACTIVE TAPPING</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="rig-batches" style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">0 batches</span>
+            <span id="rig-cycle" class="pill" style="background: rgba(251, 191, 36, 0.15); color: var(--gold); border: 1px solid rgba(251, 191, 36, 0.3); font-size: 11px; padding: 2px 8px;">Cycle #1</span>
+            <span id="rig-action-badge" class="pill" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">ACTIVE TAPPING</span>
+          </div>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 13px;">
           <span id="rig-action-status" style="font-weight: 600; color: #f1f5f9;">Engine operating normally</span>
@@ -514,131 +518,162 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    function setText(id, val) {
+      const el = document.getElementById(id);
+      if (el) el.innerText = (val != null) ? val : '';
+    }
+
+    function setStyle(id, prop, val) {
+      const el = document.getElementById(id);
+      if (el && el.style) el.style[prop] = val;
+    }
+
+    function escapeHtml(text) {
+      if (text == null) return '';
+      return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
     async function updateDashboard() {
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
 
-        document.getElementById('countdown').innerText = `Next Hourly Report: ${data.countdown}`;
-        document.getElementById('uptime').innerText = `Uptime: ${data.uptime}`;
-        document.getElementById('tg-status').innerText = `Telegram Bot: ${data.tg_status}`;
+        setText('countdown', `Next Hourly Report: ${data.countdown || '--:--'}`);
+        setText('uptime', `Uptime: ${data.uptime || '00m 00s'}`);
+        setText('tg-status', `Telegram Bot: ${data.tg_status || 'Offline'}`);
 
         // Catizen Updates
-        const cat = data.catizen;
-        document.getElementById('cat-state').innerText = cat.status;
+        const cat = data.catizen || {};
+        setText('cat-state', cat.status || 'OFFLINE');
         const catBtn = document.getElementById('cat-btn');
-        if (cat.enabled) {
-          catBtn.className = 'btn-action btn-stop';
-          catBtn.innerText = '🛑 Stop';
-        } else {
-          catBtn.className = 'btn-action btn-resume';
-          catBtn.innerText = '▶️ Resume';
+        if (catBtn) {
+          if (cat.enabled) {
+            catBtn.className = 'btn-action btn-stop';
+            catBtn.innerText = '🛑 Stop';
+          } else {
+            catBtn.className = 'btn-action btn-resume';
+            catBtn.innerText = '▶️ Resume';
+          }
         }
 
         const catOpenBtn = document.getElementById('cat-open-btn');
-        if (cat.web_app_url) {
-          catOpenBtn.href = cat.web_app_url;
-          catOpenBtn.style.display = 'inline-flex';
-        } else {
-          catOpenBtn.style.display = 'none';
+        if (catOpenBtn) {
+          if (cat.web_app_url) {
+            catOpenBtn.href = cat.web_app_url;
+            catOpenBtn.style.display = 'inline-flex';
+          } else {
+            catOpenBtn.style.display = 'none';
+          }
         }
 
-        document.getElementById('cat-gold').innerText = cat.gold.toLocaleString();
-        document.getElementById('cat-delta').innerText = (cat.gold_delta >= 0 ? '+' : '') + cat.gold_delta.toLocaleString();
-        document.getElementById('cat-rate').innerText = `${cat.gold_rate.toLocaleString()}/s`;
-        document.getElementById('cat-max').innerText = `Lvl ${cat.max_cat}`;
-        document.getElementById('cat-top').innerText = `Lvl ${cat.highest_on_board}`;
-        document.getElementById('cat-merges').innerText = cat.merges;
-        document.getElementById('cat-free-slots').innerText = `${cat.empty_slots}/12 Slots Free`;
+        setText('cat-gold', (cat.gold || 0).toLocaleString());
+        setText('cat-delta', ((cat.gold_delta >= 0 ? '+' : '') + (cat.gold_delta || 0).toLocaleString()));
+        setText('cat-rate', `${(cat.gold_rate || 0).toLocaleString()}/s`);
+        setText('cat-max', `Lvl ${cat.max_cat || 0}`);
+        setText('cat-top', `Lvl ${cat.highest_on_board || 0}`);
+        setText('cat-merges', cat.merges || 0);
+        setText('cat-free-slots', `${cat.empty_slots || 0}/12 Slots Free`);
 
         // Render 12 Cat slots
         const grid = document.getElementById('cat-board-grid');
-        grid.innerHTML = '';
-        const board = cat.board.length === 12 ? cat.board : new Array(12).fill(0);
-        board.forEach((lvl, idx) => {
-          const div = document.createElement('div');
-          div.className = 'cat-slot' + (lvl > 0 ? ' active' : '');
-          div.innerText = lvl > 0 ? `Lvl ${lvl}` : `Slot ${idx}`;
-          grid.appendChild(div);
-        });
+        if (grid) {
+          grid.innerHTML = '';
+          const board = (cat.board && cat.board.length === 12) ? cat.board : new Array(12).fill(0);
+          board.forEach((lvl, idx) => {
+            const div = document.createElement('div');
+            div.className = 'cat-slot' + (lvl > 0 ? ' active' : '');
+            div.innerText = lvl > 0 ? `Lvl ${lvl}` : `Slot ${idx}`;
+            grid.appendChild(div);
+          });
+        }
 
         // Cat Logs
         const catLogs = document.getElementById('cat-logs');
-        catLogs.innerHTML = cat.logs.map(l => `<div class="log-line"><span class="log-time">${l.time}</span><span>${escapeHtml(l.text)}</span></div>`).join('');
-        catLogs.scrollTop = catLogs.scrollHeight;
+        if (catLogs && Array.isArray(cat.logs)) {
+          catLogs.innerHTML = cat.logs.map(l => `<div class="log-line"><span class="log-time">${l.time || ''}</span><span>${escapeHtml(l.text || '')}</span></div>`).join('');
+          catLogs.scrollTop = catLogs.scrollHeight;
+        }
 
         // Rignite Updates
-        const rig = data.rignite;
-        document.getElementById('rig-state').innerText = rig.status;
+        const rig = data.rignite || {};
+        setText('rig-state', rig.status || 'OFFLINE');
         const rigBtn = document.getElementById('rig-btn');
-        if (rig.enabled) {
-          rigBtn.className = 'btn-action btn-stop';
-          rigBtn.innerText = '🛑 Stop';
-        } else {
-          rigBtn.className = 'btn-action btn-resume';
-          rigBtn.innerText = '▶️ Resume';
+        if (rigBtn) {
+          if (rig.enabled) {
+            rigBtn.className = 'btn-action btn-stop';
+            rigBtn.innerText = '🛑 Stop';
+          } else {
+            rigBtn.className = 'btn-action btn-resume';
+            rigBtn.innerText = '▶️ Resume';
+          }
         }
 
         const rigOpenBtn = document.getElementById('rig-open-btn');
-        if (rig.web_app_url) {
-          rigOpenBtn.href = rig.web_app_url;
-          rigOpenBtn.style.display = 'inline-flex';
-        } else {
-          rigOpenBtn.style.display = 'none';
+        if (rigOpenBtn) {
+          if (rig.web_app_url) {
+            rigOpenBtn.href = rig.web_app_url;
+            rigOpenBtn.style.display = 'inline-flex';
+          } else {
+            rigOpenBtn.style.display = 'none';
+          }
         }
-        document.getElementById('rig-coins').innerText = rig.coins.toLocaleString();
-        document.getElementById('rig-delta').innerText = (rig.coins_delta >= 0 ? '+' : '') + rig.coins_delta.toLocaleString();
-        document.getElementById('rig-rate').innerText = `${rig.coins_rate.toFixed(1)}/s`;
-        document.getElementById('rig-rate-cpm').innerText = `${rig.coins_cpm.toLocaleString()} coins/min`;
-        document.getElementById('rig-taps').innerText = rig.session_taps.toLocaleString();
-        document.getElementById('rig-tap-cadence').innerText = `${rig.tap_cadence.toFixed(1)} taps/s cadence`;
-        document.getElementById('rig-colony-coins').innerText = (rig.colony_coins_total || 0).toLocaleString();
-        document.getElementById('rig-boosts').innerText = `${rig.boosts} Instant`;
-        document.getElementById('rig-ad-boosts').innerText = `Ad Refills: ${rig.ad_energy_left.toLocaleString()} left`;
-        document.getElementById('rig-cycle').innerText = `#${rig.cycle}`;
-        document.getElementById('rig-batches').innerText = `${rig.batches_synced} batches synced`;
+        setText('rig-coins', (rig.coins || 0).toLocaleString());
+        setText('rig-delta', ((rig.coins_delta >= 0 ? '+' : '') + (rig.coins_delta || 0).toLocaleString()));
+        setText('rig-rate', `${(rig.coins_rate || 0).toFixed(1)}/s`);
+        setText('rig-rate-cpm', `${(rig.coins_cpm || 0).toLocaleString()} coins/min`);
+        setText('rig-taps', (rig.session_taps || 0).toLocaleString());
+        setText('rig-tap-cadence', `${(rig.tap_cadence || 0).toFixed(1)} taps/s cadence`);
+        setText('rig-colony-coins', (rig.colony_coins_total || 0).toLocaleString());
+        setText('rig-boosts', `${rig.boosts || 0} Instant`);
+        setText('rig-ad-boosts', `Ad Refills: ${(rig.ad_energy_left || 0).toLocaleString()} left`);
+        setText('rig-cycle', `#${rig.cycle || 1}`);
+        setText('rig-batches', `${rig.batches_synced || 0} batches synced`);
 
-        document.getElementById('rig-energy-val').innerText = `${rig.energy} / ${rig.max_energy}`;
-        const ePct = Math.min(100, Math.max(0, (rig.energy / Math.max(1, rig.max_energy)) * 100));
-        document.getElementById('rig-energy-bar').style.width = `${ePct}%`;
+        setText('rig-energy-val', `${rig.energy || 0} / ${rig.max_energy || 1000}`);
+        const ePct = Math.min(100, Math.max(0, ((rig.energy || 0) / Math.max(1, rig.max_energy || 1000)) * 100));
+        setStyle('rig-energy-bar', 'width', `${ePct}%`);
 
-        document.getElementById('rig-battery-val').innerText = `${rig.battery_energy.toLocaleString()} / ${rig.battery_cap.toLocaleString()}`;
-        const bPct = rig.battery_cap > 0 ? Math.min(100, Math.max(0, (rig.battery_energy / rig.battery_cap) * 100)) : 0;
-        document.getElementById('rig-battery-bar').style.width = `${bPct}%`;
+        setText('rig-battery-val', `${(rig.battery_energy || 0).toLocaleString()} / ${(rig.battery_cap || 0).toLocaleString()}`);
+        const bPct = (rig.battery_cap > 0) ? Math.min(100, Math.max(0, ((rig.battery_energy || 0) / rig.battery_cap) * 100)) : 0;
+        setStyle('rig-battery-bar', 'width', `${bPct}%`);
 
         // Refill and Action details
         const actionStatus = rig.action_status || 'Engine active';
         const nextAction = rig.next_action || 'Ready';
-        document.getElementById('rig-action-status').innerText = actionStatus;
-        document.getElementById('rig-next-action').innerText = nextAction;
+        setText('rig-action-status', actionStatus);
+        setText('rig-next-action', nextAction);
         
         const actionBadge = document.getElementById('rig-action-badge');
-        if (actionStatus.toLowerCase().includes('ad')) {
-          actionBadge.innerText = 'WATCHING AD REFILL';
-          actionBadge.style.color = '#38bdf8';
-          actionBadge.style.borderColor = 'rgba(56, 189, 248, 0.4)';
-          actionBadge.style.background = 'rgba(56, 189, 248, 0.2)';
-        } else if (actionStatus.toLowerCase().includes('recharg') || actionStatus.toLowerCase().includes('rest')) {
-          actionBadge.innerText = 'RECHARGING REST';
-          actionBadge.style.color = '#fbbf24';
-          actionBadge.style.borderColor = 'rgba(251, 191, 36, 0.4)';
-          actionBadge.style.background = 'rgba(251, 191, 36, 0.2)';
-        } else if (actionStatus.toLowerCase().includes('daily') || actionStatus.toLowerCase().includes('refill')) {
-          actionBadge.innerText = 'INSTANT REFILL';
-          actionBadge.style.color = '#4ade80';
-          actionBadge.style.borderColor = 'rgba(74, 222, 128, 0.4)';
-          actionBadge.style.background = 'rgba(74, 222, 128, 0.2)';
-        } else {
-          actionBadge.innerText = 'BURST TAPPING';
-          actionBadge.style.color = '#c084fc';
-          actionBadge.style.borderColor = 'rgba(192, 132, 252, 0.4)';
-          actionBadge.style.background = 'rgba(192, 132, 252, 0.2)';
+        if (actionBadge) {
+          if (actionStatus.toLowerCase().includes('ad')) {
+            actionBadge.innerText = 'WATCHING AD REFILL';
+            actionBadge.style.color = '#38bdf8';
+            actionBadge.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+            actionBadge.style.background = 'rgba(56, 189, 248, 0.2)';
+          } else if (actionStatus.toLowerCase().includes('recharg') || actionStatus.toLowerCase().includes('rest')) {
+            actionBadge.innerText = 'RECHARGING REST';
+            actionBadge.style.color = '#fbbf24';
+            actionBadge.style.borderColor = 'rgba(251, 191, 36, 0.4)';
+            actionBadge.style.background = 'rgba(251, 191, 36, 0.2)';
+          } else if (actionStatus.toLowerCase().includes('daily') || actionStatus.toLowerCase().includes('refill')) {
+            actionBadge.innerText = 'INSTANT REFILL';
+            actionBadge.style.color = '#4ade80';
+            actionBadge.style.borderColor = 'rgba(74, 222, 128, 0.4)';
+            actionBadge.style.background = 'rgba(74, 222, 128, 0.2)';
+          } else {
+            actionBadge.innerText = 'BURST TAPPING';
+            actionBadge.style.color = '#c084fc';
+            actionBadge.style.borderColor = 'rgba(192, 132, 252, 0.4)';
+            actionBadge.style.background = 'rgba(192, 132, 252, 0.2)';
+          }
         }
 
         // Rig Logs
         const rigLogs = document.getElementById('rig-logs');
-        rigLogs.innerHTML = rig.logs.map(l => `<div class="log-line"><span class="log-time">${l.time}</span><span>${escapeHtml(l.text)}</span></div>`).join('');
-        rigLogs.scrollTop = rigLogs.scrollHeight;
+        if (rigLogs && Array.isArray(rig.logs)) {
+          rigLogs.innerHTML = rig.logs.map(l => `<div class="log-line"><span class="log-time">${l.time || ''}</span><span>${escapeHtml(l.text || '')}</span></div>`).join('');
+          rigLogs.scrollTop = rigLogs.scrollHeight;
+        }
 
       } catch (err) {
         console.error('Update failed:', err);
