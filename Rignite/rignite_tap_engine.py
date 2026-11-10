@@ -583,7 +583,8 @@ class RigniteClient:
                 if coins_reward and self.start_coins is not None:
                     self.start_coins += coins_reward
                     self.coins += coins_reward
-                self.log(f"🔥 Daily Login Reward claimed successfully! ({data})", "bold green")
+                streak = data.get("streak") or data.get("dailyStreak", "")
+                self.log(f"🔥 Daily Login Reward claimed successfully! Streak: {streak}", "bold green")
                 self.emit_telemetry("daily_claimed", {"action_status": "Daily reward claimed"})
                 return True
             else:
@@ -608,7 +609,7 @@ class RigniteClient:
                 if isinstance(reward, int) and reward > 0 and self.start_coins is not None:
                     self.start_coins += reward
                     self.coins += reward
-                self.log(f"🎁 Surprise / Mystery Box claimed! ({data})", "bold magenta")
+                self.log("🎁 Surprise / Mystery Box claimed successfully!", "bold magenta")
                 self.emit_telemetry("surprise_claimed", {"action_status": "Surprise box claimed"})
                 return True
             else:
@@ -632,7 +633,8 @@ class RigniteClient:
             resp = self.http.post(SANTRAL_TOPLA_ENDPOINT, json={"no": no}, headers=headers, timeout=12)
             if resp.status_code == 200:
                 data = resp.json()
-                self.log(f"⚡ Power Plant (Santral #{no}) generation collected! ({data})", "bold cyan")
+                alinan = data.get("alinan", 0)
+                self.log(f"⚡ Power Plant (Santral #{no}) generation collected: +{alinan} energy units", "bold cyan")
                 self.refresh_me()
                 return True
             else:
@@ -653,11 +655,12 @@ class RigniteClient:
             resp = self.http.post(FRIENDS_CLAIM_ENDPOINT, json={}, headers=headers, timeout=12)
             if resp.status_code == 200:
                 data = resp.json()
-                reward = data.get("coins", 0) or data.get("reward", 0)
-                if isinstance(reward, int) and reward > 0 and self.start_coins is not None:
-                    self.start_coins += reward
-                    self.coins += reward
-                self.log(f"👥 Friends commission claimed: {data}", "bold green")
+                claimed = data.get("claimed", 0)
+                if claimed > 0:
+                    if self.start_coins is not None:
+                        self.start_coins += claimed
+                        self.coins += claimed
+                    self.log(f"👥 Friends commission claimed: +{claimed:,} coins", "bold green")
                 return True
         except Exception:
             pass
