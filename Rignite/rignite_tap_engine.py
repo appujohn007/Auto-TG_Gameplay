@@ -295,6 +295,9 @@ class RigniteClient:
         self.recent_logs.append((timestamp, text, style))
         if len(self.recent_logs) > 6:
             self.recent_logs.pop(0)
+        # If not running in an interactive terminal (e.g. supervised pipe), stream log to console so supervisor captures it
+        if not sys.stdout.isatty():
+            console.print(f"[Rignite] {text}")
 
     def fetch_fresh_init_data(
         self,
