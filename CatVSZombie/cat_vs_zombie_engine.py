@@ -173,7 +173,7 @@ class CatVSZombieEngine:
         if extra:
             payload.update(extra)
 
-        sys.stdout.write(f"\n[AUTOPLAYER_METRIC] {json.dumps(payload)}\n")
+        sys.stdout.write(f"[AUTOPLAYER_METRIC] {json.dumps(payload)}\n")
         sys.stdout.flush()
 
     def fetch_fresh_init_data(self) -> bool:

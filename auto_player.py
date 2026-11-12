@@ -517,6 +517,84 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         <div id="rig-logs" class="log-box"></div>
       </div>
     </div>
+    <!-- CATS VS ZOMBIES CARD -->
+    <div class="game-card">
+      <div class="game-header">
+        <div class="game-title">🧟 Cats vs Zombies <span class="pill pill-cvz">Topic #6</span></div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <a id="cvz-open-btn" class="btn-action btn-open" href="#" target="_blank" style="display: none;">🎮 Open Game</a>
+          <button id="cvz-repair-btn" class="btn-action btn-ad-refill" onclick="triggerCvzAction('repair_wall')" title="Manually Trigger Fortress Wall Repair">🛠️ Repair Wall</button>
+          <button id="cvz-claim-btn" class="btn-action btn-ad-refill" onclick="triggerCvzAction('claim_tasks')" title="Claim Daily Tasks & Milestones">🎁 Claim Daily</button>
+          <button id="cvz-btn" class="btn-action btn-stop" onclick="toggleGame('catvszombie')">🛑 Stop</button>
+          <span id="cvz-state" class="pill pill-cvz">ONLINE</span>
+        </div>
+      </div>
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-label">Gold Balance</div>
+          <div id="cvz-gold" class="stat-val" style="color: var(--gold);">0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Net Gold Delta</div>
+          <div id="cvz-gold-delta" class="stat-val" style="color: var(--green);">+0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Gems Balance</div>
+          <div id="cvz-gems" class="stat-val" style="color: #38bdf8;">0</div>
+          <div id="cvz-gems-delta" style="font-size: 11px; color: var(--green); margin-top: 4px; font-weight: 700;">+0 gems</div>
+        </div>
+      </div>
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-label">Current Wave</div>
+          <div id="cvz-wave" class="stat-val" style="color: var(--gold);">Wave #1</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Waves Cleared</div>
+          <div id="cvz-waves-cleared" class="stat-val" style="color: var(--green);">0</div>
+          <div id="cvz-waves-lost" style="font-size: 11px; color: #94a3b8; margin-top: 4px;">0 lost</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Wall Repairs</div>
+          <div id="cvz-wall-repairs" class="stat-val" style="color: var(--accent-cat);">0</div>
+          <div id="cvz-squad-size" style="font-size: 11px; color: #38bdf8; margin-top: 4px;">Squad: 0 cats</div>
+        </div>
+      </div>
+
+      <!-- Action & Tactical Status Banner -->
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Tactical Phase & Defense</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="cvz-timer-rem" style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Ready</span>
+            <span id="cvz-action-badge" class="pill pill-cvz">DEFENSE READY</span>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 13px;">
+          <span id="cvz-action-status" style="font-weight: 600; color: #f1f5f9;">Engine operating normally</span>
+        </div>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; color: var(--text-muted);">
+          <span>🏰 Fortress Wall Integrity</span>
+          <span id="cvz-wall-hp-val">0 / 1000 HP (100%)</span>
+        </div>
+        <div class="meter-bar-container"><div id="cvz-wall-bar" class="meter-bar-fill fill-green" style="width: 100%;"></div></div>
+
+        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 10px; margin-bottom: 4px; color: var(--text-muted);">
+          <span>🌾 Daily Farming Cap (Gold)</span>
+          <span id="cvz-daily-gold-val">0 / 0</span>
+        </div>
+        <div class="meter-bar-container"><div id="cvz-daily-gold-bar" class="meter-bar-fill fill-cyan" style="width: 0%;"></div></div>
+      </div>
+
+      <div>
+        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Live Engine Terminal Stream (Saved in logs/catvszombie_history.log)</div>
+        <div id="cvz-logs" class="log-box"></div>
+      </div>
+    </div>
+
   </div>
 
   <div class="footer">
@@ -714,6 +792,9 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         setText('cvz-wave', `Wave #${cvz.wave || 1}`);
         setText('cvz-waves-cleared', (cvz.waves_cleared || 0).toLocaleString());
         setText('cvz-wall-repairs', (cvz.wall_repairs || 0).toLocaleString());
+        setText('cvz-waves-lost', `${cvz.waves_lost || 0} lost`);
+        setText('cvz-squad-size', `Squad: ${cvz.cats_equipped || 0} cats`);
+        setText('cvz-timer-rem', cvz.repair_rem > 0 ? `Repair: ${cvz.repair_rem}s` : (cvz.cooldown_rem > 0 ? `Cooldown: ${cvz.cooldown_rem}s` : 'Ready'));
 
         // Wall HP Bar
         const wallHp = cvz.wall_hp || 0;
@@ -914,10 +995,14 @@ class AutoPlayerSupervisor:
                             pass
                         continue
 
+                    cleaned = line.strip()
+                    if not cleaned:
+                        continue
+
                     # Record line in local history file and rolling buffer
-                    tracker.add_log(line)
+                    tracker.add_log(cleaned)
                     # Also print clean summary to console
-                    sys.stdout.write(f"[{label}] {line}")
+                    sys.stdout.write(f"[{label}] {cleaned}\n")
                     sys.stdout.flush()
 
                 try:
