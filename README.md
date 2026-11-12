@@ -10,6 +10,7 @@ An autonomous, multi-game Telegram WebApp gameplay automation framework and live
 | :--- | :--- | :--- | :--- | :--- |
 | **Catizen Auto-Pilot** | `@catizenbot` | Node.js, WebSockets, ProtoBuf | **Topic #2** | Real-time board state manager, level-matching feline merger, auto-spawner, daily task claimer |
 | **Rignite Tap Engine** | `@RigniteBot` | Python, HTTP/2 REST, JSON Telemetry | **Topic #4** | Organic Gaussian burst tapper, alternating touch poles, rewarded ad watching, smart recharge |
+| **Cats vs Zombies Sentinel** | `@CatsVSZombies_bot` | Python, HTTP REST, Client Mark Handshake | **Topic #6** | Infinite wave combat, automated wall breach repair, cooldown watchdog, daily tasks/milestone claimer |
 
 ---
 
@@ -19,7 +20,7 @@ An autonomous, multi-game Telegram WebApp gameplay automation framework and live
 flowchart TD
     subgraph Supervisor ["Central Supervisor (auto_player.py)"]
         SP[Process Runner / Subprocess Manager]
-        TR[GameTrackers: Catizen & Rignite]
+        TR[GameTrackers: Catizen, Rignite, CatVSZombie]
         TG[Pyrogram Telegram Bot Client]
         TP[Telegraph / Graph.org Publisher]
         WEB[Aiohttp Web Dashboard Engine :8080]
@@ -38,10 +39,20 @@ flowchart TD
         TEL[Front-End TapFP Telemetry Synthesizer]
     end
 
+    subgraph CvZEngine ["Cats vs Zombies Engine (CatVSZombie/cat_vs_zombie_engine.py)"]
+        AUTH2[SessionMaker Auth & X-Cvz-Client Handshake]
+        WAVE[Wave Battle Simulator & Cooldown Timer]
+        WALL[Fortress Wall Repair Watchdog]
+        TASK[Daily & Milestone Task Claimer]
+    end
+
     SP -->|Spawns & Monitors| CatizenEngine
     SP -->|Spawns & Monitors| RigniteEngine
+    SP -->|Spawns & Monitors| CvZEngine
 
     CatizenEngine -->|JSON Metric IPC stdout| TR
+    RigniteEngine -->|JSON Metric IPC stdout| TR
+    CvZEngine -->|JSON Metric IPC stdout| TR
     RigniteEngine -->|JSON Metric IPC stdout| TR
 
     TR -->|Live State| WEB

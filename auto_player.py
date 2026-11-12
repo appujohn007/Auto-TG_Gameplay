@@ -3,7 +3,8 @@ Auto Player - Central Multi-Game Autonomous Supervisor with Modern Web Dashboard
 --------------------------------------------------------------------------------
 Monitors and runs:
   1. Catizen: CATIZEN/play_catizen.js  (Telegram Topic ID: 2)
-  2. Rignite: Rignite/rignite_tap_engine.py (Telegram Topic ID: 4)
+    2. Rignite: Rignite/rignite_tap_engine.py (Telegram Topic ID: 4)
+  3. Cats vs Zombies: CatVSZombie/cat_vs_zombie_engine.py (Telegram Topic ID: 6)
 
 Features:
 - High-Performance Web Dashboard (http://localhost:8080):
@@ -56,6 +57,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8659110374:AAG1p0sSoGz3dxKEF6kkc2rV
 TARGET_CHAT_ID = -1003959353966
 TOPIC_CATIZEN = 2
 TOPIC_RIGNITE = 4
+TOPIC_CATVSZOMBIE = int(os.getenv("TOPIC_CATVSZOMBIE", "6"))
 
 REPORT_INTERVAL_SECONDS = 3600  # 1 Hour
 WEB_PORT = int(os.getenv("WEB_PORT", os.getenv("PORT", "8080")))
@@ -71,9 +73,12 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 
 CATIZEN_SCRIPT = os.path.join(ROOT_DIR, "CATIZEN", "play_catizen.js")
 RIGNITE_SCRIPT = os.path.join(ROOT_DIR, "Rignite", "rignite_tap_engine.py")
+CATVSZOMBIE_SCRIPT = os.path.join(ROOT_DIR, "CatVSZombie", "cat_vs_zombie_engine.py")
 
 CATIZEN_LOG_FILE = os.path.join(LOGS_DIR, "catizen_history.log")
 RIGNITE_LOG_FILE = os.path.join(LOGS_DIR, "rignite_history.log")
+CATVSZOMBIE_LOG_FILE = os.path.join(LOGS_DIR, "catvszombie_history.log")
+CATVSZOMBIE_CMD_FILE = os.path.join(LOGS_DIR, "catvszombie_cmd.json")
 EVENTS_AUDIT_FILE = os.path.join(LOGS_DIR, "events_audit.jsonl")
 
 # ==============================================================================
@@ -271,6 +276,8 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
       --accent-cat-glow: rgba(192, 132, 252, 0.2);
       --accent-rig: #38bdf8;
       --accent-rig-glow: rgba(56, 189, 248, 0.2);
+      --accent-cvz: #10b981;
+      --accent-cvz-glow: rgba(16, 185, 129, 0.2);
       --gold: #fbbf24;
       --green: #22c55e;
       --red: #ef4444;
@@ -302,8 +309,9 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
       border: 1px solid rgba(34, 197, 94, 0.3);
     }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; }
     @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+    .pill-cvz { background: var(--accent-cvz-glow); color: var(--accent-cvz); border: 1px solid var(--accent-cvz); }
     .game-card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
@@ -513,7 +521,7 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div class="footer">
     <div id="uptime">Uptime: 00m 00s</div>
-    <div>Target Chat: -1003959353966 (Topics: 2 & 4) | Reports: Telegraph (Graph.org)</div>
+    <div>Target Chat: -1003959353966 (Topics: 2, 4 & 6) | Reports: Telegraph (Graph.org)</div>
     <div id="tg-status">Telegram Bot: Connecting...</div>
   </div>
 
@@ -675,6 +683,100 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
           rigLogs.scrollTop = rigLogs.scrollHeight;
         }
 
+        // Cats vs Zombies Updates
+        const cvz = data.catvszombie || {};
+        setText('cvz-state', cvz.status || 'OFFLINE');
+        const cvzBtn = document.getElementById('cvz-btn');
+        if (cvzBtn) {
+          if (cvz.enabled) {
+            cvzBtn.className = 'btn-action btn-stop';
+            cvzBtn.innerText = '🛑 Stop';
+          } else {
+            cvzBtn.className = 'btn-action btn-resume';
+            cvzBtn.innerText = '▶️ Resume';
+          }
+        }
+
+        const cvzOpenBtn = document.getElementById('cvz-open-btn');
+        if (cvzOpenBtn) {
+          if (cvz.web_app_url) {
+            cvzOpenBtn.href = cvz.web_app_url;
+            cvzOpenBtn.style.display = 'inline-flex';
+          } else {
+            cvzOpenBtn.style.display = 'none';
+          }
+        }
+
+        setText('cvz-gold', (cvz.gold || 0).toLocaleString());
+        setText('cvz-gold-delta', ((cvz.gold_delta >= 0 ? '+' : '') + (cvz.gold_delta || 0).toLocaleString()));
+        setText('cvz-gems', (cvz.gems || 0).toLocaleString());
+        setText('cvz-gems-delta', ((cvz.gems_delta >= 0 ? '+' : '') + (cvz.gems_delta || 0).toLocaleString()));
+        setText('cvz-wave', `Wave #${cvz.wave || 1}`);
+        setText('cvz-waves-cleared', (cvz.waves_cleared || 0).toLocaleString());
+        setText('cvz-wall-repairs', (cvz.wall_repairs || 0).toLocaleString());
+
+        // Wall HP Bar
+        const wallHp = cvz.wall_hp || 0;
+        const wallMax = Math.max(1, cvz.wall_max_hp || 1000);
+        const wallPct = Math.min(100, Math.max(0, Math.round((wallHp / wallMax) * 100)));
+        setText('cvz-wall-hp-val', `${wallHp.toLocaleString()} / ${wallMax.toLocaleString()} HP (${wallPct}%)`);
+        setStyle('cvz-wall-bar', 'width', `${wallPct}%`);
+        const wallBar = document.getElementById('cvz-wall-bar');
+        if (wallBar) {
+          if (wallPct > 50) {
+            wallBar.style.background = 'linear-gradient(90deg, #10b981, #34d399)';
+          } else if (wallPct > 20) {
+            wallBar.style.background = 'linear-gradient(90deg, #f59e0b, #fbbf24)';
+          } else {
+            wallBar.style.background = 'linear-gradient(90deg, #ef4444, #f87171)';
+          }
+        }
+
+        // Action Status
+        const cvzAction = cvz.action_status || 'Engine active';
+        setText('cvz-action-status', cvzAction);
+        const cvzBadge = document.getElementById('cvz-action-badge');
+        if (cvzBadge) {
+          if (cvzAction.toLowerCase().includes('repair')) {
+            cvzBadge.innerText = 'REPAIRING';
+            cvzBadge.style.color = '#fbbf24';
+            cvzBadge.style.borderColor = 'rgba(251, 191, 36, 0.4)';
+            cvzBadge.style.background = 'rgba(251, 191, 36, 0.2)';
+          } else if (cvzAction.toLowerCase().includes('cooldown')) {
+            cvzBadge.innerText = 'COOLDOWN';
+            cvzBadge.style.color = '#38bdf8';
+            cvzBadge.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+            cvzBadge.style.background = 'rgba(56, 189, 248, 0.2)';
+          } else if (cvzAction.toLowerCase().includes('battle') || cvzAction.toLowerCase().includes('engag')) {
+            cvzBadge.innerText = 'IN COMBAT';
+            cvzBadge.style.color = '#ef4444';
+            cvzBadge.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+            cvzBadge.style.background = 'rgba(239, 68, 68, 0.2)';
+          } else {
+            cvzBadge.innerText = 'DEFENSE READY';
+            cvzBadge.style.color = '#10b981';
+            cvzBadge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+            cvzBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+          }
+        }
+
+        // Daily Caps
+        setText('cvz-daily-gold-val', `${(cvz.daily_gold || 0).toLocaleString()} / ${(cvz.daily_gold_cap || 0).toLocaleString()}`);
+        const dgPct = (cvz.daily_gold_cap > 0) ? Math.min(100, Math.round(((cvz.daily_gold || 0) / cvz.daily_gold_cap) * 100)) : 0;
+        setStyle('cvz-daily-gold-bar', 'width', `${dgPct}%`);
+
+        setText('cvz-daily-gems-val', `${(cvz.daily_gems || 0).toLocaleString()} / ${(cvz.daily_gems_cap || 0).toLocaleString()}`);
+        const dmPct = (cvz.daily_gems_cap > 0) ? Math.min(100, Math.round(((cvz.daily_gems || 0) / cvz.daily_gems_cap) * 100)) : 0;
+        setStyle('cvz-daily-gems-bar', 'width', `${dmPct}%`);
+
+        // CvZ Logs
+        const cvzLogs = document.getElementById('cvz-logs');
+        if (cvzLogs && Array.isArray(cvz.logs)) {
+          cvzLogs.innerHTML = cvz.logs.map(l => `<div class="log-line"><span class="log-time">${l.time || ''}</span><span>${escapeHtml(l.text || '')}</span></div>`).join('');
+          cvzLogs.scrollTop = cvzLogs.scrollHeight;
+        }
+
+
       } catch (err) {
         console.error('Update failed:', err);
       }
@@ -682,7 +784,10 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function toggleGame(game) {
       try {
-        const btn = document.getElementById(game === 'catizen' ? 'cat-btn' : 'rig-btn');
+        let btn = null;
+        if (game === 'catizen') btn = document.getElementById('cat-btn');
+        else if (game === 'rignite') btn = document.getElementById('rig-btn');
+        else if (game === 'catvszombie') btn = document.getElementById('cvz-btn');
         const isStop = btn.innerText.includes('Stop');
         const action = isStop ? 'stop' : 'resume';
         btn.disabled = true;
@@ -690,6 +795,20 @@ WEB_DASHBOARD_HTML = """<!DOCTYPE html>
         setTimeout(() => { btn.disabled = false; updateDashboard(); }, 500);
       } catch (e) {
         console.error('Toggle error:', e);
+      }
+    }
+
+
+    async function triggerCvzAction(action) {
+      const btnId = action === 'repair_wall' ? 'cvz-repair-btn' : 'cvz-claim-btn';
+      const btn = document.getElementById(btnId);
+      try {
+        if (btn) btn.disabled = true;
+        await fetch(`/api/control?game=catvszombie&action=${action}`, { method: 'POST' });
+        setTimeout(() => { if (btn) btn.disabled = false; updateDashboard(); }, 1000);
+      } catch (e) {
+        console.error('Action error:', e);
+        if (btn) btn.disabled = false;
       }
     }
 
@@ -735,6 +854,7 @@ class AutoPlayerSupervisor:
         self.start_time = datetime.now(IST_TZ)
         self.catizen_tracker = GameTracker("Catizen", CATIZEN_LOG_FILE)
         self.rignite_tracker = GameTracker("Rignite", RIGNITE_LOG_FILE)
+        self.catvszombie_tracker = GameTracker("CatVSZombie", CATVSZOMBIE_LOG_FILE)
         self.telegraph = TelegraphManager()
         self.loop = asyncio.new_event_loop()
         self.seconds_until_next_report = REPORT_INTERVAL_SECONDS
@@ -853,6 +973,16 @@ class AutoPlayerSupervisor:
         c_merges = sum(1 for e in self.catizen_tracker.events_in_period if e["data"].get("type") == "merge")
         c_buys = sum(1 for e in self.catizen_tracker.events_in_period if e["data"].get("type") == "buy_cat")
 
+        # CatVSZombie stats
+        z_state = self.catvszombie_tracker.current_state
+        z_init = self.catvszombie_tracker.start_state
+        z_curr_gold = z_state.get("gold", 0)
+        z_start_gold = z_init.get("gold", z_curr_gold)
+        z_gold_delta = z_state.get("gold_delta", z_curr_gold - z_start_gold)
+        z_curr_gems = z_state.get("gems", 0)
+        z_start_gems = z_init.get("gems", z_curr_gems)
+        z_gems_delta = z_state.get("gems_delta", z_curr_gems - z_start_gems)
+
         # Rignite stats
         r_state = self.rignite_tracker.current_state
         r_init = self.rignite_tracker.start_state
@@ -910,6 +1040,31 @@ class AutoPlayerSupervisor:
                 "colony_coins_total": r_state.get("colony_coins_total", 0),
                 "cycle": r_state.get("cycle_count", 1),
                 "logs": self.rignite_tracker.raw_logs[-35:]
+            },
+            "catvszombie": {
+                "status": self.catvszombie_tracker.status_pill,
+                "enabled": self.catvszombie_tracker.is_enabled,
+                "web_app_url": z_state.get("web_app_url", ""),
+                "wave": z_state.get("wave", 1),
+                "gold": z_curr_gold,
+                "gold_delta": z_gold_delta,
+                "gems": z_curr_gems,
+                "gems_delta": z_gems_delta,
+                "wall_hp": z_state.get("wall_hp", 0),
+                "wall_max_hp": z_state.get("wall_max_hp", 1000),
+                "wall_pct": z_state.get("wall_pct", 100),
+                "cooldown_rem": z_state.get("cooldown_rem", 0),
+                "repair_rem": z_state.get("repair_rem", 0),
+                "waves_cleared": z_state.get("waves_cleared", 0),
+                "waves_lost": z_state.get("waves_lost", 0),
+                "wall_repairs": z_state.get("wall_repairs", 0),
+                "daily_gold": z_state.get("daily_gold", 0),
+                "daily_gold_cap": z_state.get("daily_gold_cap", 0),
+                "daily_gems": z_state.get("daily_gems", 0),
+                "daily_gems_cap": z_state.get("daily_gems_cap", 0),
+                "cats_equipped": z_state.get("cats_equipped", 0),
+                "action_status": z_state.get("action_status", "Active"),
+                "logs": self.catvszombie_tracker.raw_logs[-35:]
             }
         }
 
@@ -935,6 +1090,8 @@ class AutoPlayerSupervisor:
                     target = self.catizen_tracker
                 elif game == "rignite":
                     target = self.rignite_tracker
+                elif game == "catvszombie":
+                    target = self.catvszombie_tracker
 
                 if not target:
                     return web.json_response({"ok": False, "error": "Unknown game"}, status=400)
@@ -963,6 +1120,15 @@ class AutoPlayerSupervisor:
                             json.dump({"action": "watch_ad_refill", "ts": time.time()}, f)
                         target.add_log("🎬 [CONTROL] Manual watch ad & refill requested from Dashboard.")
                         return web.json_response({"ok": True, "status": "ad_command_queued", "game": game})
+                    except Exception as ce:
+                        return web.json_response({"ok": False, "error": str(ce)}, status=500)
+                elif action in ["repair_wall", "claim_tasks"] and game == "catvszombie":
+                    cmd_file = os.path.join(LOGS_DIR, "catvszombie_cmd.json")
+                    try:
+                        with open(cmd_file, "w", encoding="utf-8") as f:
+                            json.dump({"action": action, "ts": time.time()}, f)
+                        target.add_log(f"🕹️ [CONTROL] Command '{action}' queued from Dashboard.")
+                        return web.json_response({"ok": True, "status": f"{action}_queued", "game": game})
                     except Exception as ce:
                         return web.json_response({"ok": False, "error": str(ce)}, status=500)
                 else:
@@ -1224,6 +1390,105 @@ class AutoPlayerSupervisor:
             html_nodes=nodes
         )
 
+
+    # --------------------------------------------------------------------------
+    # CAT VS ZOMBIE MESSAGES & TELEGRAPH BUILDERS
+    # --------------------------------------------------------------------------
+    def build_catvszombie_tg_message(self, date_str: str, time_from: str, time_to: str, telegraph_url: Optional[str]) -> str:
+        curr = self.catvszombie_tracker.current_state
+        prev = self.catvszombie_tracker.period_start_state
+
+        curr_gold = curr.get("gold", 0)
+        prev_gold = prev.get("gold", curr_gold)
+        gold_diff = curr_gold - prev_gold
+
+        curr_gems = curr.get("gems", 0)
+        prev_gems = prev.get("gems", curr_gems)
+        gems_diff = curr_gems - prev_gems
+
+        wave = curr.get("wave", 1)
+        wall_hp = curr.get("wall_hp", 0)
+        wall_max_hp = curr.get("wall_max_hp", 1000)
+        waves_cleared = curr.get("waves_cleared", 0)
+        wall_repairs = curr.get("wall_repairs", 0)
+        daily_gold = curr.get("daily_gold", 0)
+        daily_gold_cap = curr.get("daily_gold_cap", 0)
+        daily_gems = curr.get("daily_gems", 0)
+        daily_gems_cap = curr.get("daily_gems_cap", 0)
+        restarts = self.catvszombie_tracker.restart_count
+
+        delta_sign_g = "+" if gold_diff >= 0 else ""
+        delta_sign_m = "+" if gems_diff >= 0 else ""
+        link_line = f"\n🌐 <b>Full Hourly Audit:</b> <a href=\"{telegraph_url}\">View Detailed Telegraph Report</a>\n" if telegraph_url else ""
+
+        return (
+            f"🧟 <b>CATS VS ZOMBIES BATTLE OVERVIEW</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 <b>Date:</b> {date_str}\n"
+            f"⏰ <b>Window:</b> <code>{time_from}</code> ➔ <code>{time_to}</code>\n"
+            f"🟢 <b>Status:</b> <code>WAVE COMBAT & DEFENSE</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🛡️ <b>Current Wave:</b> <b>Wave #{wave}</b>\n"
+            f"🏰 <b>Fortress Wall:</b> <code>{wall_hp:,} / {wall_max_hp:,} HP</code>\n"
+            f"💰 <b>Gold Balance:</b> <code>{curr_gold:,}</code> (<code>{delta_sign_g}{gold_diff:,}</code>)\n"
+            f"💎 <b>Gems Balance:</b> <code>{curr_gems:,}</code> (<code>{delta_sign_m}{gems_diff:,}</code>)\n"
+            f"🌾 <b>Daily Farm:</b> Gold: <code>{daily_gold}/{daily_gold_cap}</code> | Gems: <code>{daily_gems}/{daily_gems_cap}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🚀 <b>1-Hour Performance:</b>\n"
+            f"  • Waves Cleared: <b>{waves_cleared}</b>\n"
+            f"  • Fortress Wall Repairs: <b>{wall_repairs}</b>\n"
+            f"  • Engine Restarts: <b>{restarts}</b>\n"
+            f"{link_line}"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Auto-Player Sentinel • Asia/Kolkata (IST)</i>"
+        )
+
+    def generate_catvszombie_telegraph(self, date_str: str, time_from: str, time_to: str) -> Optional[str]:
+        curr = self.catvszombie_tracker.current_state
+        prev = self.catvszombie_tracker.period_start_state
+        curr_gold = curr.get("gold", 0)
+        prev_gold = prev.get("gold", curr_gold)
+        gold_diff = curr_gold - prev_gold
+
+        recent_events = self.catvszombie_tracker.events_in_period[-40:]
+        event_nodes = []
+        for ev in reversed(recent_events):
+            t = ev.get("time", "")
+            d = ev.get("data", {})
+            ev_type = d.get("type", "event")
+            event_nodes.append({
+                "tag": "li",
+                "children": [f"[{t}] Type: {ev_type} | Wave: #{d.get('wave', 1)} | Gold: {d.get('gold', 0):,} | Wall: {d.get('wall_hp', 0)}/{d.get('wall_max_hp', 1000)}"]
+            })
+
+        if not event_nodes:
+            event_nodes.append({"tag": "li", "children": ["No combat events recorded in this hourly slice."]})
+
+        nodes = [
+            {"tag": "h3", "children": [f"Cats vs Zombies Detailed Status ({date_str})"]},
+            {"tag": "p", "children": [f"Interval: {time_from} to {time_to} (IST)"]},
+            {"tag": "h4", "children": ["Tactical Defense & Economy Snapshot"]},
+            {
+                "tag": "ul",
+                "children": [
+                    {"tag": "li", "children": [f"Current Wave: Wave #{curr.get('wave', 1)}"]},
+                    {"tag": "li", "children": [f"Fortress Wall: {curr.get('wall_hp', 0):,} / {curr.get('wall_max_hp', 1000):,} HP"]},
+                    {"tag": "li", "children": [f"Gold Balance: {curr_gold:,} (Net: {'+' if gold_diff >= 0 else ''}{gold_diff:,})"]},
+                    {"tag": "li", "children": [f"Gems Balance: {curr.get('gems', 0):,}"]},
+                    {"tag": "li", "children": [f"Waves Cleared (Session): {curr.get('waves_cleared', 0):,}"]},
+                    {"tag": "li", "children": [f"Wall Repairs: {curr.get('wall_repairs', 0)}"]},
+                    {"tag": "li", "children": [f"Supervisor Restarts: {self.catvszombie_tracker.restart_count}"]}
+                ]
+            },
+            {"tag": "h4", "children": ["Chronological Battle Activity Log (Last 40 Events)"]},
+            {"tag": "ul", "children": event_nodes}
+        ]
+
+        return self.telegraph.create_page(
+            title=f"Cats vs Zombies Hourly Report - {date_str} {time_to}",
+            html_nodes=nodes
+        )
+
     # --------------------------------------------------------------------------
     # STARTUP NOTIFICATION
     # --------------------------------------------------------------------------
@@ -1262,6 +1527,21 @@ class AutoPlayerSupervisor:
             await self.safe_send_topic_message(TOPIC_RIGNITE, rignite_msg)
         except Exception as e:
             self.rignite_tracker.add_log(f"Rignite startup alert error: {e}")
+
+        cvz_msg = (
+            f"🧟 <b>CATS VS ZOMBIES SENTINEL ONLINE</b> 🟢\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🚀 <b>Auto-Player Supervisor:</b> Initialized\n"
+            f"🕒 <b>Start Time:</b> <code>{now_ist}</code>\n"
+            f"⚙️ <b>Engine Target:</b> <code>CatVSZombie/cat_vs_zombie_engine.py</code>\n"
+            f"⏱️ <b>Hourly Audit Window:</b> Every 60 Minutes\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Infinite wave combat, automated wall repair, & task claimer active.</i>"
+        )
+        try:
+            await self.safe_send_topic_message(TOPIC_CATVSZOMBIE, cvz_msg)
+        except Exception as e:
+            self.catvszombie_tracker.add_log(f"CatVSZombie startup alert error: {e}")
 
     # --------------------------------------------------------------------------
     # BACKGROUND SCHEDULE RUNNER & WEB SERVER
@@ -1396,11 +1676,20 @@ class AutoPlayerSupervisor:
                     pass
                 self.rignite_tracker.last_heartbeat = now
 
+            CVZ_TIMEOUT_SEC = 180
+            if self.catvszombie_tracker.proc_handle and (now - self.catvszombie_tracker.last_heartbeat > CVZ_TIMEOUT_SEC):
+                self.catvszombie_tracker.add_log(f"⚠️ [WATCHDOG] CatVSZombie process silent > {CVZ_TIMEOUT_SEC}s. Forcing restart...")
+                try:
+                    self.catvszombie_tracker.proc_handle.terminate()
+                except Exception:
+                    pass
+                self.catvszombie_tracker.last_heartbeat = now
+
     def run(self):
         print("=" * 65)
         print("🚀 Auto-Player Central Supervisor Starting")
         print(f"🕒 Timezone: Asia/Kolkata (IST)")
-        print(f"📢 Telegram Chat: {TARGET_CHAT_ID} (Topics: 2 & 4)")
+        print(f"📢 Telegram Chat: {TARGET_CHAT_ID} (Topics: 2, 4 & 6)")
         print(f"🌐 Web Dashboard: http://localhost:{WEB_PORT}")
         print(f"📁 Local Log Storage: logs/")
         print("=" * 65)
@@ -1422,6 +1711,15 @@ class AutoPlayerSupervisor:
             daemon=True
         )
         rig_thread.start()
+
+        # 3. Start Cat vs Zombie Engine Thread
+        cvz_cmd = [sys.executable, CATVSZOMBIE_SCRIPT]
+        cvz_thread = threading.Thread(
+            target=self.start_process,
+            args=(cvz_cmd, os.path.dirname(CATVSZOMBIE_SCRIPT), self.catvszombie_tracker, "CatVSZombie"),
+            daemon=True
+        )
+        cvz_thread.start()
 
         # 3. Start Heartbeat Watchdog Thread
         watchdog_thread = threading.Thread(target=self.watchdog_monitor_loop, daemon=True)
